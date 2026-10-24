@@ -18,6 +18,7 @@
 
 #include "fum/Dialect/Dep/IR/DepDialect.h"
 #include "fum/Dialect/Dep/Transforms/Passes.h"
+#include "fum/Dialect/Monad/IR/MonadDialect.h"
 
 /// Attach dependent typing interfaces to upstream dialects.
 static void registerExternalInterfaces(mlir::DialectRegistry &registry) {
@@ -33,8 +34,8 @@ int main(int argc, char **argv) {
   mlir::dep::registerPasses();
 
   mlir::DialectRegistry registry;
-  registry.insert<mlir::dep::DepDialect, mlir::arith::ArithDialect,
-                  mlir::func::FuncDialect>();
+  registry.insert<mlir::dep::DepDialect, mlir::monad::MonadDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
   registerExternalInterfaces(registry);
 
   // Add the following to include *all* MLIR Core dialects, or selectively
