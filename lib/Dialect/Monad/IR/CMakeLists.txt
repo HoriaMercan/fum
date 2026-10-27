@@ -8,8 +8,10 @@ add_mlir_dialect_library(MLIRMonadDialect
 
   DEPENDS
   MLIRMonadOpsIncGen
+  MLIRMonadTypeInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRMonadInterfaces
   MLIRSideEffectInterfaces
   )

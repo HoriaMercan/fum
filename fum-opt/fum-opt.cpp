@@ -9,6 +9,7 @@
 #include "fum/Dialect/Dep/Interfaces/DepTypeInteraces.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
@@ -35,7 +36,8 @@ int main(int argc, char **argv) {
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::dep::DepDialect, mlir::monad::MonadDialect,
-                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::transform::TransformDialect>();
   registerExternalInterfaces(registry);
 
   // Add the following to include *all* MLIR Core dialects, or selectively

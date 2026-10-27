@@ -11,6 +11,7 @@
 
 include "mlir/IR/AttrTypeBase.td"
 include "fum/Dialect/Monad/IR/MonadDialect.td"
+include "fum/Dialect/Monad/Interfaces/MonadTypeInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // Monad type definitions
@@ -21,7 +22,8 @@ class Monad_Type<string name, string typeMnemonic, list<Trait> traits = []>
   let mnemonic = typeMnemonic;
 }
 
-def MonadMaybeType : Monad_Type<"Maybe", "maybe"> {
+def MonadMaybeType : Monad_Type<"Maybe", "maybe",
+    [MonadTypeInterface]> {
   let summary = "Maybe monad type";
   let description = [{
     A value of type `!monad.maybe<T>` is either a success carrying a value of
@@ -30,5 +32,9 @@ def MonadMaybeType : Monad_Type<"Maybe", "maybe"> {
   let parameters = (ins "::mlir::Type":$valueType);
   let assemblyFormat = "`<` $valueType `>`";
 }
+
+def AnyMonadType : Type<
+    CPred<"::llvm::isa<::mlir::monad::MonadTypeInterface>($_self)">,
+    "monadic type", "::mlir::monad::MonadTypeInterface">;
 
 #endif // MONAD_TYPES

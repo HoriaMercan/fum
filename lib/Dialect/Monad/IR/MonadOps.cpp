@@ -16,3 +16,27 @@ using namespace mlir::monad;
 
 #define GET_OP_CLASSES
 #include "fum/Dialect/Monad/IR/MonadOps.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// MonadMaybeBindOp
+//===----------------------------------------------------------------------===//
+
+/// Verifies that the body takes the value carried by the input and yields the
+/// result.
+LogicalResult MonadMaybeBindOp::verifyRegions() {
+  Block &body = getBody().front();
+  Type valueType = getInput().getType().getValueType();
+  if (body.getNumArguments() != 1 || body.getArgument(0).getType() != valueType)
+    return emitOpError()
+           << "expects the body to take a single argument of type "
+           << valueType;
+
+  auto yield = dyn_cast<MonadYieldOp>(body.back());
+  if (!yield)
+    return emitOpError() << "expects the body to be terminated by "
+                         << MonadYieldOp::getOperationName();
+  if (yield.getValue().getType() != getType())
+    return emitOpError() << "expects the body to yield " << getType()
+                         << ", got " << yield.getValue().getType();
+  return success();
+}
