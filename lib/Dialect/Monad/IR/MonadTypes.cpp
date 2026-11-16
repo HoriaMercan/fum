@@ -39,37 +39,45 @@ static void printValueTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
   llvm::interleaveComma(valueTypes, printer);
 }
 
-/// Parses a possibly empty set of errors in braces, in any order, rejects
-/// duplicates, and sorts the errors by name.
+/// Sorts error types by name.
+static void sortErrors(MutableArrayRef<ErrorType> errors) {
+  llvm::sort(errors, [](ErrorType lhs, ErrorType rhs) {
+    return lhs.getName().getValue() < rhs.getName().getValue();
+  });
+}
+
+/// Parses a possibly empty set of error types in braces, in any order, and
+/// rejects duplicate names, and sorts the errors by name.
 static ParseResult parseErrorSet(AsmParser &parser,
-                                 SmallVector<ErrorAttr> &errors) {
+                                 SmallVector<ErrorType> &errors) {
   if (parser.parseCommaSeparatedList(
           AsmParser::Delimiter::Braces, [&]() -> ParseResult {
             SMLoc loc = parser.getCurrentLocation();
-            Attribute attr;
-            if (parser.parseAttribute(attr))
+            Type type;
+            if (parser.parseType(type))
               return failure();
-            auto error = dyn_cast<ErrorAttr>(attr);
+            ErrorType error = dyn_cast<ErrorType>(type);
             if (!error)
-              return parser.emitError(loc) << "expected an error, got " << attr;
-            if (llvm::is_contained(errors, error))
               return parser.emitError(loc)
-                     << "expected distinct errors, got " << error << " twice";
+                     << "expected an error type, got " << type;
+            if (llvm::any_of(errors, [&](ErrorType other) {
+                  return other.getName() == error.getName();
+                }))
+              return parser.emitError(loc)
+                     << "expected distinct error names, got " << error.getName()
+                     << " twice";
             errors.push_back(error);
             return success();
           }))
     return failure();
-  llvm::sort(errors, [](ErrorAttr lhs, ErrorAttr rhs) {
-    return lhs.getName() < rhs.getName();
-  });
+  sortErrors(errors);
   return success();
 }
 
-/// Prints a set of errors in braces.
-static void printErrorSet(AsmPrinter &printer, ArrayRef<ErrorAttr> errors) {
+/// Prints a set of error types in braces.
+static void printErrorSet(AsmPrinter &printer, ArrayRef<ErrorType> errors) {
   printer << "{";
-  llvm::interleaveComma(
-      errors, printer, [&](ErrorAttr error) { printer.printAttribute(error); });
+  llvm::interleaveComma(errors, printer);
   printer << "}";
 }
 
@@ -86,26 +94,86 @@ MonadTypeInterface MaybeType::cloneWithValueTypes(TypeRange valueTypes) const {
 }
 
 //===----------------------------------------------------------------------===//
-// EitherType
+// ErrorType
 //===----------------------------------------------------------------------===//
 
-/// Verifies that the errors are sorted by name and distinct.
-LogicalResult EitherType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                 ArrayRef<Type> valueTypes,
-                                 ArrayRef<ErrorAttr> errors) {
-  for (size_t index = 1, size = errors.size(); index < size; ++index)
-    if (errors[index - 1].getName() >= errors[index].getName())
-      return emitError()
-             << "expects the errors to be sorted by name and distinct, got "
-             << errors[index - 1] << " before " << errors[index];
+/// Verifies that the error name is not empty.
+LogicalResult ErrorType::verify(function_ref<InFlightDiagnostic()> emitError,
+                                StringAttr name, ArrayRef<Type> payloadTypes) {
+  if (name.getValue().empty())
+    return emitError() << "expects a non-empty error name";
   return success();
 }
 
-/// Returns the either type with the given value types and the errors of this
-/// type.
+//===----------------------------------------------------------------------===//
+// ErrorUnionType
+//===----------------------------------------------------------------------===//
+
+/// Returns the union of the given errors, sorted by name.
+ErrorUnionType ErrorUnionType::get(MLIRContext *context,
+                                   ArrayRef<ErrorType> errors) {
+  SmallVector<ErrorType> sorted(errors);
+  sortErrors(sorted);
+  return Base::get(context, sorted);
+}
+
+/// Returns the union of the given errors, sorted by name, or null and emits
+/// an error if their names are not distinct.
+ErrorUnionType
+ErrorUnionType::getChecked(function_ref<InFlightDiagnostic()> emitError,
+                           MLIRContext *context, ArrayRef<ErrorType> errors) {
+  SmallVector<ErrorType> sorted(errors);
+  sortErrors(sorted);
+  return Base::getChecked(emitError, context, sorted);
+}
+
+/// Verifies that the errors are sorted by name and that their names are
+/// distinct.
+LogicalResult
+ErrorUnionType::verify(function_ref<InFlightDiagnostic()> emitError,
+                       ArrayRef<ErrorType> errors) {
+  for (size_t index = 1, size = errors.size(); index < size; ++index)
+    if (errors[index - 1].getName().getValue() >=
+        errors[index].getName().getValue())
+      return emitError() << "expects the errors to be sorted by name and to "
+                            "have distinct names, got "
+                         << errors[index - 1] << " before " << errors[index];
+  return success();
+}
+
+/// Returns the member error named `name`, or null if there is none.
+ErrorType ErrorUnionType::lookup(StringRef name) const {
+  for (ErrorType error : getErrors())
+    if (error.getName().getValue() == name)
+      return error;
+  return nullptr;
+}
+
+/// Returns whether `error` is a member of this union.
+bool ErrorUnionType::contains(ErrorType error) const {
+  return lookup(error.getName().getValue()) == error;
+}
+
+/// Returns whether every member of this union is a member of `other`.
+bool ErrorUnionType::isSubsetOf(ErrorUnionType other) const {
+  return llvm::all_of(getErrors(),
+                      [&](ErrorType error) { return other.contains(error); });
+}
+
+//===----------------------------------------------------------------------===//
+// EitherType
+//===----------------------------------------------------------------------===//
+
+/// Returns the either type with the given value types and the left type of
+/// this type.
 MonadTypeInterface EitherType::cloneWithValueTypes(TypeRange valueTypes) const {
-  return EitherType::get(getContext(), llvm::to_vector(valueTypes),
-                         getErrors());
+  return EitherType::get(getContext(), getLeftType(),
+                         llvm::to_vector(valueTypes));
+}
+
+/// Returns the left type if it is an error union, and null otherwise.
+ErrorUnionType EitherType::getErrorUnion() const {
+  return dyn_cast<ErrorUnionType>(getLeftType());
 }
 
 void MonadDialect::registerTypes() {

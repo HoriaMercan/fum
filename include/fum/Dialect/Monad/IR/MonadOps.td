@@ -10,6 +10,7 @@
 #define MONAD_OPS
 
 include "fum/Dialect/Monad/IR/MonadTypes.td"
+include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -46,8 +47,8 @@ def MonadDoOp : Monad_Op<"do", [RecursiveMemoryEffects]> {
     monadic value to the arguments of the next block, and `monad.yield` ends
     the computation with its result. Every value bound in the region is of the
     same monad as the result: its type is the result type up to the value
-    types. Every block except the first must have exactly
-    one predecessor. Every block must end with a terminator from the monad
+    types. Every block except the first must have a unique
+    predecessor, which may branch to it along several edges. Every block must end with a terminator from the monad
     dialect.
 
     How a bind continues depends on the monad. For the maybe monad, binding
@@ -131,6 +132,183 @@ def MonadMaybeNoneOp : Monad_Op<"maybe.none", [Pure]> {
   }];
   let results = (outs MonadMaybeType:$result);
   let assemblyFormat = "attr-dict `:` qualified(type($result))";
+}
+
+//===----------------------------------------------------------------------===//
+// Error operations
+//===----------------------------------------------------------------------===//
+
+def MonadErrorMakeOp : Monad_Op<"error.make", [
+    Pure,
+    RangedTypesMatchWith<"payload types match the payload types of the result",
+                         "result", "payload",
+                         "::llvm::cast<::mlir::monad::ErrorType>($_self).getPayloadTypes()">]> {
+  let summary = "Creates an error from its payload";
+  let description = [{
+    Creates the error of the result type carrying the given payload values.
+
+    ```mlir
+    %e = monad.error.make : !monad.error<"overflow">
+    %f = monad.error.make %i, %n : !monad.error<"out_of_bounds", index, index>
+    ```
+  }];
+  let arguments = (ins Variadic<AnyType>:$payload);
+  let results = (outs MonadErrorType:$result);
+  let assemblyFormat = "$payload attr-dict `:` qualified(type($result))";
+}
+
+def MonadErrorPayloadOp : Monad_Op<"error.payload", [
+    Pure,
+    RangedTypesMatchWith<"result types match the payload types of the error",
+                         "error", "payload",
+                         "::llvm::cast<::mlir::monad::ErrorType>($_self).getPayloadTypes()">]> {
+  let summary = "Returns the payload of an error";
+  let description = [{
+    Returns the payload values carried by an error.
+
+    ```mlir
+    %i, %n = monad.error.payload %f : !monad.error<"out_of_bounds", index, index>
+    ```
+  }];
+  let arguments = (ins MonadErrorType:$error);
+  let results = (outs Variadic<AnyType>:$payload);
+  let assemblyFormat = "$error attr-dict `:` qualified(type($error))";
+}
+
+//===----------------------------------------------------------------------===//
+// Either operations
+//===----------------------------------------------------------------------===//
+
+def MonadEitherLeftOp : Monad_Op<"either.left", [
+    Pure,
+    TypesMatchWith<"value type matches the left type of the result",
+                   "result", "value",
+                   "::llvm::cast<::mlir::monad::EitherType>($_self).getLeftType()">]> {
+  let summary = "Creates a left either value";
+  let description = [{
+    Creates the left either value carrying the given value.
+
+    ```mlir
+    %m = monad.either.left %x : !monad.either<i32, f32>
+    ```
+  }];
+  let arguments = (ins AnyType:$value);
+  let results = (outs MonadEitherType:$result);
+  let assemblyFormat = "$value attr-dict `:` qualified(type($result))";
+}
+
+def MonadEitherBranchOp : Monad_Op<"either.branch", [
+    Terminator,
+    DeclareOpInterfaceMethods<BranchOpInterface>]> {
+  let summary = "Branches on the side of an either value";
+  let description = [{
+    Branches to `left` with the value of a left, and to `right` with the
+    values of a right. The `left` successor takes one argument of the left
+    type, and the `right` successor one argument of each value type. These
+    arguments are produced by the branch, which forwards no operands.
+
+    ```mlir
+    monad.either.branch %m, left ^l, right ^r : !monad.either<i32, f32>
+    ^l(%x: i32):
+    ^r(%y: f32):
+    ```
+  }];
+  let arguments = (ins MonadEitherType:$input);
+  let successors = (successor AnySuccessor:$left, AnySuccessor:$right);
+  let assemblyFormat = [{
+    $input `,` `left` $left `,` `right` $right attr-dict `:`
+    qualified(type($input))
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Exception operations: either whose left type is an error union
+//===----------------------------------------------------------------------===//
+
+def MonadThrowOp : Monad_Op<"throw", [Pure]> {
+  let summary = "Creates an either value that holds an error";
+  let description = [{
+    Creates the left either value holding the error `error`, which must be a
+    member of the error union that is the left type of the result.
+
+    ```mlir
+    %m = monad.throw %e : !monad.error<"overflow">
+        -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
+    ```
+  }];
+  let arguments = (ins MonadErrorType:$error);
+  let results = (outs MonadEitherType:$result);
+  let assemblyFormat = [{
+    $error attr-dict `:` qualified(type($error)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def MonadCatchOp : Monad_Op<"catch", [
+    Terminator,
+    HasParent<"MonadDoOp">,
+    DeclareOpInterfaceMethods<BranchOpInterface>]> {
+  let summary = "Handles the errors of an either value";
+  let description = [{
+    Continues the enclosing `monad.do` depending on the input, an either
+    value whose left type is an error union:
+
+    - a right branches to `^ok` with its values; without `^ok`, the
+      `monad.do` ends with the input, whose type must then be the result
+      type of the `monad.do`;
+    - an error that a case lists branches to the handler of the case, with
+      one argument of the case type: an error type, or an error union for a
+      group of errors;
+    - any other error ends the `monad.do` with that error, which must
+      therefore be a member of the error union of the `monad.do`.
+
+    The cases are disjoint, and their errors are members of the error union
+    of the input. The successor arguments are produced by the catch, which
+    forwards no operands.
+
+    ```mlir
+    monad.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
+        : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
+                                            !monad.error<"overflow">}>, i32>
+    ^ok(%x: i32):
+    ^recover(%e: !monad.error<"div_by_zero">):
+    ```
+  }];
+  let arguments = (ins MonadEitherType:$input, TypeArrayAttr:$caseTypes);
+  let successors = (successor VariadicSuccessor<AnySuccessor>:$dests);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// Returns the successor of a right, or null if a right ends the
+    /// enclosing monad.do.
+    ::mlir::Block *getOk();
+    /// Returns the handler successors, one per case.
+    ::mlir::SuccessorRange getHandlers();
+  }];
+}
+
+def MonadWidenOp : Monad_Op<"widen", [
+    Pure,
+    DeclareOpInterfaceMethods<CastOpInterface>]> {
+  let summary = "Widens the error union of an either value";
+  let description = [{
+    Converts an either value whose left type is an error union to the same
+    either type with a larger error union. The errors of the input must be
+    members of the error union of the result.
+
+    ```mlir
+    %w = monad.widen %m
+        : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+        to !monad.either<!monad.error_union<{!monad.error<"a">,
+                                             !monad.error<"b">}>, i32>
+    ```
+  }];
+  let arguments = (ins MonadEitherType:$input);
+  let results = (outs MonadEitherType:$result);
+  let assemblyFormat = [{
+    $input attr-dict `:` qualified(type($input)) `to` qualified(type($result))
+  }];
 }
 
 #endif // MONAD_OPS
