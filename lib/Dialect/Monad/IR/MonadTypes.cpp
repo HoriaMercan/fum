@@ -39,37 +39,60 @@ static void printValueTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
   llvm::interleaveComma(valueTypes, printer);
 }
 
-/// Parses a possibly empty set of errors in braces, in any order, rejects
-/// duplicates, and sorts the errors by name.
+/// Returns the errors sorted by name.
+static SmallVector<ErrorType> sortErrors(ArrayRef<ErrorType> errors) {
+  SmallVector<ErrorType> sorted(errors);
+  llvm::sort(sorted, [](ErrorType lhs, ErrorType rhs) {
+    return lhs.getName() < rhs.getName();
+  });
+  return sorted;
+}
+
+/// Verifies that the errors are sorted by name and have distinct names.
+static LogicalResult
+verifyErrorSet(function_ref<InFlightDiagnostic()> emitError,
+               ArrayRef<ErrorType> errors) {
+  for (size_t index = 1, size = errors.size(); index < size; ++index)
+    if (errors[index - 1].getName() >= errors[index].getName())
+      return emitError()
+             << "expects the errors to be sorted by name and distinct, got "
+             << errors[index - 1] << " before " << errors[index];
+  return success();
+}
+
+/// Parses a possibly empty set of error types in braces, in any order, rejects
+/// errors with the same name, and sorts the errors by name.
 static ParseResult parseErrorSet(AsmParser &parser,
-                                 SmallVector<ErrorAttr> &errors) {
+                                 SmallVector<ErrorType> &errors) {
   if (parser.parseCommaSeparatedList(
           AsmParser::Delimiter::Braces, [&]() -> ParseResult {
             SMLoc loc = parser.getCurrentLocation();
-            Attribute attr;
-            if (parser.parseAttribute(attr))
+            Type type;
+            if (parser.parseType(type))
               return failure();
-            auto error = dyn_cast<ErrorAttr>(attr);
+            auto error = dyn_cast<ErrorType>(type);
             if (!error)
-              return parser.emitError(loc) << "expected an error, got " << attr;
-            if (llvm::is_contained(errors, error))
               return parser.emitError(loc)
-                     << "expected distinct errors, got " << error << " twice";
+                     << "expected an error type, got " << type;
+            if (llvm::any_of(errors, [&](ErrorType other) {
+                  return other.getName() == error.getName();
+                }))
+              return parser.emitError(loc)
+                     << "expected distinct error names, got \""
+                     << error.getName() << "\" twice";
             errors.push_back(error);
             return success();
           }))
     return failure();
-  llvm::sort(errors, [](ErrorAttr lhs, ErrorAttr rhs) {
-    return lhs.getName() < rhs.getName();
-  });
+  errors = sortErrors(errors);
   return success();
 }
 
-/// Prints a set of errors in braces.
-static void printErrorSet(AsmPrinter &printer, ArrayRef<ErrorAttr> errors) {
+/// Prints a set of error types in braces.
+static void printErrorSet(AsmPrinter &printer, ArrayRef<ErrorType> errors) {
   printer << "{";
-  llvm::interleaveComma(
-      errors, printer, [&](ErrorAttr error) { printer.printAttribute(error); });
+  llvm::interleaveComma(errors, printer,
+                        [&](ErrorType error) { printer.printType(error); });
   printer << "}";
 }
 
@@ -86,26 +109,80 @@ MonadTypeInterface MaybeType::cloneWithValueTypes(TypeRange valueTypes) const {
 }
 
 //===----------------------------------------------------------------------===//
-// EitherType
+// ErrorType
 //===----------------------------------------------------------------------===//
 
-/// Verifies that the errors are sorted by name and distinct.
-LogicalResult EitherType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                 ArrayRef<Type> valueTypes,
-                                 ArrayRef<ErrorAttr> errors) {
-  for (size_t index = 1, size = errors.size(); index < size; ++index)
-    if (errors[index - 1].getName() >= errors[index].getName())
-      return emitError()
-             << "expects the errors to be sorted by name and distinct, got "
-             << errors[index - 1] << " before " << errors[index];
+/// Verifies that the name is not empty.
+LogicalResult ErrorType::verify(function_ref<InFlightDiagnostic()> emitError,
+                                StringRef name, ArrayRef<Type> payload) {
+  if (name.empty())
+    return emitError() << "expects a non-empty error name";
   return success();
 }
 
-/// Returns the either type with the given value types and the errors of this
-/// type.
-MonadTypeInterface EitherType::cloneWithValueTypes(TypeRange valueTypes) const {
-  return EitherType::get(getContext(), llvm::to_vector(valueTypes),
-                         getErrors());
+//===----------------------------------------------------------------------===//
+// ErrorUnionType
+//===----------------------------------------------------------------------===//
+
+/// Returns the union of the given errors, sorted by name.
+ErrorUnionType ErrorUnionType::get(MLIRContext *context,
+                                   ArrayRef<ErrorType> errors) {
+  return Base::get(context, sortErrors(errors));
+}
+
+/// Returns the union of the given errors, sorted by name, or emits an error
+/// and returns null if they are not a valid set.
+ErrorUnionType
+ErrorUnionType::getChecked(function_ref<InFlightDiagnostic()> emitError,
+                           MLIRContext *context, ArrayRef<ErrorType> errors) {
+  return Base::getChecked(emitError, context, sortErrors(errors));
+}
+
+/// Verifies that the errors are a non-empty set sorted by name.
+LogicalResult
+ErrorUnionType::verify(function_ref<InFlightDiagnostic()> emitError,
+                       ArrayRef<ErrorType> errors) {
+  if (errors.empty())
+    return emitError() << "expects at least one error";
+  return verifyErrorSet(emitError, errors);
+}
+
+//===----------------------------------------------------------------------===//
+// ValueOrErrorType
+//===----------------------------------------------------------------------===//
+
+/// Returns the value-or-error type with the given value types and errors,
+/// sorting the errors by name.
+ValueOrErrorType ValueOrErrorType::get(MLIRContext *context,
+                                       TypeRange valueTypes,
+                                       ArrayRef<ErrorType> errors) {
+  return Base::get(context, llvm::to_vector(valueTypes), sortErrors(errors));
+}
+
+/// Returns the value-or-error type with the given value types and errors,
+/// sorting the errors by name, or emits an error and returns null if the
+/// errors are not a valid set.
+ValueOrErrorType
+ValueOrErrorType::getChecked(function_ref<InFlightDiagnostic()> emitError,
+                             MLIRContext *context, TypeRange valueTypes,
+                             ArrayRef<ErrorType> errors) {
+  return Base::getChecked(emitError, context, llvm::to_vector(valueTypes),
+                          sortErrors(errors));
+}
+
+/// Verifies that the errors are sorted by name and distinct.
+LogicalResult
+ValueOrErrorType::verify(function_ref<InFlightDiagnostic()> emitError,
+                         ArrayRef<Type> valueTypes,
+                         ArrayRef<ErrorType> errors) {
+  return verifyErrorSet(emitError, errors);
+}
+
+/// Returns the value-or-error type with the given value types and the errors
+/// of this type.
+MonadTypeInterface
+ValueOrErrorType::cloneWithValueTypes(TypeRange valueTypes) const {
+  return ValueOrErrorType::get(getContext(), valueTypes, getErrors());
 }
 
 void MonadDialect::registerTypes() {

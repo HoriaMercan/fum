@@ -168,7 +168,7 @@ func.func @do_block_without_terminator(%input: !monad.maybe<i32>) {
 
 // Reject a non-entry block without a predecessor.
 func.func @do_block_without_predecessor(%input: !monad.maybe<i32>) {
-  // expected-error @below {{expects every block except the first to have exactly one predecessor}}
+  // expected-error @below {{expects every block except the first to have a unique predecessor}}
   %result = monad.do : !monad.maybe<i32> {
     monad.yield %input : !monad.maybe<i32>
   ^unreachable:
@@ -181,7 +181,7 @@ func.func @do_block_without_predecessor(%input: !monad.maybe<i32>) {
 
 // Reject a block reached by both the entry block and a backedge.
 func.func @do_block_with_multiple_predecessors(%input: !monad.maybe<>) {
-  // expected-error @below {{expects every block except the first to have exactly one predecessor}}
+  // expected-error @below {{expects every block except the first to have a unique predecessor}}
   %result = monad.do : !monad.maybe<> {
     monad.bind %input, ^loop : !monad.maybe<>
   ^loop:
@@ -217,45 +217,269 @@ func.func @do_continuation_with_foreign_terminator(%input: !monad.maybe<>) {
 // -----
 
 // expected-error @below {{expects a non-empty error name}}
-func.func private @error_with_empty_name() attributes {error = #monad.error<"">}
+func.func private @error_with_empty_name(!monad.error<"">)
 
 // -----
 
-// expected-error @below {{expected distinct errors, got #monad.error<"a"> twice}}
-func.func private @either_with_duplicate_error(!monad.either<[i32] throws {#monad.error<"a">, #monad.error<"a">}>)
+// expected-error @below {{expected distinct error names, got "a" twice}}
+func.func private @value_or_error_with_duplicate_error(!monad.value_or_error<[i32] throws {!monad.error<"a">, !monad.error<"a", i32>}>)
 
 // -----
 
-// expected-error @below {{expected an error, got 1 : i32}}
-func.func private @either_with_non_error(!monad.either<[i32] throws {1 : i32}>)
+// expected-error @below {{expected an error type, got 'i32'}}
+func.func private @value_or_error_with_non_error(!monad.value_or_error<[i32] throws {i32}>)
 
 // -----
 
 // expected-error @below {{expected 'throws'}}
-func.func private @either_without_errors(!monad.either<[i32]>)
+func.func private @value_or_error_without_errors(!monad.value_or_error<[i32]>)
 
 // -----
 
-func.func @bind_other_errors(%input: !monad.either<[i32] throws {#monad.error<"a">}>) {
-  %result = monad.do : !monad.either<[i32] throws {#monad.error<"b">}> {
+// expected-error @below {{expects at least one error}}
+func.func private @empty_error_union(!monad.error_union<{}>)
+
+// -----
+
+func.func @error_make_payload_mismatch(%payload: i64) {
+  // expected-error @below {{payload types match the payload types of the error}}
+  %error = "monad.error.make"(%payload) : (i64) -> !monad.error<"a", i32>
+  return
+}
+
+// -----
+
+func.func @throw_other_error(%error: !monad.error<"a">) {
+  // expected-error @below {{expects every error of the input to be an error of the result, got '!monad.error<"a">'}}
+  %failure = monad.throw %error : !monad.error<"a"> -> !monad.value_or_error<[] throws {!monad.error<"b">}>
+  return
+}
+
+// -----
+
+func.func @throw_error_with_other_payload(%error: !monad.error<"a", i32>) {
+  // expected-error @below {{expects every error of the input to be an error of the result}}
+  %failure = monad.throw %error : !monad.error<"a", i32> -> !monad.value_or_error<[] throws {!monad.error<"a">}>
+  return
+}
+
+// -----
+
+func.func @widen_to_fewer_errors(%input: !monad.value_or_error<[i32] throws {!monad.error<"a">}>) {
+  // expected-error @below {{operand type '!monad.value_or_error<[i32] throws {!monad.error<"a">}>' and result type '!monad.value_or_error<[i32] throws {}>' are cast incompatible}}
+  %widened = monad.widen %input : !monad.value_or_error<[i32] throws {!monad.error<"a">}> to !monad.value_or_error<[i32] throws {}>
+  return
+}
+
+// -----
+
+func.func @bind_other_errors(%input: !monad.value_or_error<[i32] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[i32] throws {!monad.error<"b">}> {
     // expected-error @below {{expects the input to be of the monad of the enclosing monad.do}}
-    monad.bind %input, ^next : !monad.either<[i32] throws {#monad.error<"a">}>
+    monad.bind %input, ^next : !monad.value_or_error<[i32] throws {!monad.error<"a">}>
   ^next(%value: i32):
-    %wrapped = monad.return %value : !monad.either<[i32] throws {#monad.error<"b">}>
-    monad.yield %wrapped : !monad.either<[i32] throws {#monad.error<"b">}>
+    %wrapped = monad.return %value : !monad.value_or_error<[i32] throws {!monad.error<"b">}>
+    monad.yield %wrapped : !monad.value_or_error<[i32] throws {!monad.error<"b">}>
   }
   return
 }
 
 // -----
 
-func.func @bind_maybe_in_either(%input: !monad.maybe<i32>) {
-  %result = monad.do : !monad.either<[i32] throws {#monad.error<"a">}> {
+func.func @bind_maybe_in_value_or_error(%input: !monad.maybe<i32>) {
+  %result = monad.do : !monad.value_or_error<[i32] throws {!monad.error<"a">}> {
     // expected-error @below {{expects the input to be of the monad of the enclosing monad.do}}
     monad.bind %input, ^next : !monad.maybe<i32>
   ^next(%value: i32):
-    %wrapped = monad.return %value : !monad.either<[i32] throws {#monad.error<"a">}>
-    monad.yield %wrapped : !monad.either<[i32] throws {#monad.error<"a">}>
+    %wrapped = monad.return %value : !monad.value_or_error<[i32] throws {!monad.error<"a">}>
+    monad.yield %wrapped : !monad.value_or_error<[i32] throws {!monad.error<"a">}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_in_maybe_do(%input: !monad.value_or_error<[] throws {}>) {
+  %result = monad.do : !monad.maybe<> {
+    // expected-error @below {{expects the enclosing monad.do to produce a value-or-error type, got '!monad.maybe<>'}}
+    monad.catch %input, ^ok [] : !monad.value_or_error<[] throws {}>
+  ^ok:
+    %none = monad.maybe.none : !monad.maybe<>
+    monad.yield %none : !monad.maybe<>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_ok_type_mismatch(%input: !monad.value_or_error<[i32] throws {}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects ^ok to take arguments of types ('i32')}}
+    monad.catch %input, ^ok [] : !monad.value_or_error<[i32] throws {}>
+  ^ok(%value: f32):
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_without_ok_other_type(%input: !monad.value_or_error<[i32] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[i64] throws {}> {
+    // expected-error @below {{expects the input to be of the result type of the enclosing monad.do without ^ok}}
+    monad.catch %input [!monad.error<"a"> -> ^recover] : !monad.value_or_error<[i32] throws {!monad.error<"a">}>
+  ^recover(%error: !monad.error<"a">):
+    %zero = arith.constant 0 : i64
+    %recovered = monad.return %zero : !monad.value_or_error<[i64] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[i64] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_case_not_an_error(%input: !monad.value_or_error<[] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects every case to be an error or error union type, got 'i32'}}
+    monad.catch %input, ^ok [i32 -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%error: i32):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_error_not_thrown(%input: !monad.value_or_error<[] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects every case to name errors of the input, got '!monad.error<"b">'}}
+    monad.catch %input, ^ok [!monad.error<"b"> -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%error: !monad.error<"b">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_error_named_twice(%input: !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects every error to be named by at most one case, got '!monad.error<"a">' twice}}
+    monad.catch %input, ^ok [!monad.error<"a"> -> ^recover, !monad.error_union<{!monad.error<"a">, !monad.error<"b">}> -> ^recover_both] : !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%error: !monad.error<"a">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  ^recover_both(%errors: !monad.error_union<{!monad.error<"a">, !monad.error<"b">}>):
+    %recovered_both = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered_both : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_handler_type_mismatch(%input: !monad.value_or_error<[] throws {!monad.error<"a", i32>}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects the handler of '!monad.error<"a", i32>' to take one argument of that type}}
+    monad.catch %input, ^ok [!monad.error<"a", i32> -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a", i32>}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%payload: i32):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_default_type_mismatch(%input: !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects the handler of `default` to take one argument of type '!monad.error_union<{!monad.error<"b">}>'}}
+    monad.catch %input, ^ok [!monad.error<"a"> -> ^recover, default -> ^rest] : !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%error: !monad.error<"a">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  ^rest(%errors: !monad.error_union<{!monad.error<"a">, !monad.error<"b">}>):
+    %rest_recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %rest_recovered : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_default_without_errors(%input: !monad.value_or_error<[] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expects `default` to have errors to catch}}
+    monad.catch %input, ^ok [!monad.error<"a"> -> ^recover, default -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %done : !monad.value_or_error<[] throws {}>
+  ^recover(%error: !monad.error<"a">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_default_not_last(%input: !monad.value_or_error<[] throws {!monad.error<"a">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    // expected-error @below {{expected `default` to be the last case}}
+    monad.catch %input, ^ok [default -> ^rest, !monad.error<"a"> -> ^rest] : !monad.value_or_error<[] throws {!monad.error<"a">}>
+  }
+  return
+}
+
+// -----
+
+func.func @catch_uncaught_error_not_in_do(%input: !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>) {
+  %result = monad.do : !monad.value_or_error<[] throws {!monad.error<"b">}> {
+    // expected-error @below {{expects the uncaught error '!monad.error<"a">' to be an error of the result type of the enclosing monad.do}}
+    monad.catch %input, ^ok [!monad.error<"b"> -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a">, !monad.error<"b">}>
+  ^ok:
+    %done = monad.return : !monad.value_or_error<[] throws {!monad.error<"b">}>
+    monad.yield %done : !monad.value_or_error<[] throws {!monad.error<"b">}>
+  ^recover(%error: !monad.error<"b">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {!monad.error<"b">}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {!monad.error<"b">}>
+  }
+  return
+}
+
+// -----
+
+// The unique-predecessor rule still rejects a block reached from two
+// different terminators.
+func.func @catch_and_bind_to_same_block(%input: !monad.value_or_error<[] throws {!monad.error<"a">}>) {
+  // expected-error @below {{expects every block except the first to have a unique predecessor}}
+  %result = monad.do : !monad.value_or_error<[] throws {}> {
+    monad.catch %input, ^ok [!monad.error<"a"> -> ^recover] : !monad.value_or_error<[] throws {!monad.error<"a">}>
+  ^ok:
+    %error = monad.error.make : !monad.error<"a">
+    %wrapped = monad.return %error : !monad.value_or_error<[!monad.error<"a">] throws {}>
+    monad.bind %wrapped, ^recover : !monad.value_or_error<[!monad.error<"a">] throws {}>
+  ^recover(%caught: !monad.error<"a">):
+    %recovered = monad.return : !monad.value_or_error<[] throws {}>
+    monad.yield %recovered : !monad.value_or_error<[] throws {}>
   }
   return
 }
