@@ -1,0 +1,402 @@
+// RUN: fum-opt %s --convert-monad-to-cf | FileCheck %s
+
+// The examples of the exception design, lowered to cf, arith, and ub. Handles
+// are i32 stand-ins so that run-lowered.sh can execute @main, which returns 0
+// if every check passes, and otherwise the number of the first failing check.
+
+!error_div_by_zero = !monad.error<"div_by_zero">
+!error_overflow = !monad.error<"overflow">
+!error_silenceable = !monad.error<"silenceable">
+!error_definite = !monad.error<"definite">
+!error_out_of_bounds = !monad.error<"out_of_bounds", i32, i32>
+!errors_arith = !monad.error_union<{!error_div_by_zero, !error_overflow}>
+!errors_overflow = !monad.error_union<{!error_overflow}>
+!errors_tiling = !monad.error_union<{!error_silenceable}>
+!errors_fusion = !monad.error_union<{!error_definite, !error_silenceable}>
+!errors_definite = !monad.error_union<{!error_definite}>
+!errors_bounds = !monad.error_union<{!error_out_of_bounds}>
+!no_errors = !monad.error_union<{}>
+
+// A computation that throws an arithmetic error is an i32 tag, the values,
+// and no payload slot; a throw is the constant tag of the error and poison.
+// CHECK-LABEL: func.func @safe_div
+// CHECK-SAME: (%{{.+}}: i32, %{{.+}}: i32) -> (i32, i32)
+// CHECK: %[[DIVISION:.+]] = arith.constant 1855107791 : i32
+// CHECK: %[[CHECK:.+]] = arith.select %{{.+}}, %[[DIVISION]], %{{.+}} : i32
+// CHECK: %[[POISON:.+]] = ub.poison : i32
+// CHECK: arith.cmpi eq, %[[CHECK]]
+// CHECK: cf.cond_br %{{.+}}, ^{{.+}}, ^[[EXIT:.+]](%[[CHECK]], %[[POISON]] : i32, i32)
+// CHECK: arith.constant 425502571 : i32
+// CHECK: arith.divsi
+// CHECK: cf.br ^[[EXIT]](%{{.+}}, %{{.+}} : i32, i32)
+// CHECK: ^[[EXIT]](%[[TAG:.+]]: i32, %[[VALUE:.+]]: i32):
+// CHECK: return %[[TAG]], %[[VALUE]] : i32, i32
+func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!errors_arith, i32> {
+  %result = monad.do : !monad.either<!errors_arith, i32> {
+    %pass = monad.return : !monad.either<!errors_arith>
+    %zero = arith.constant 0 : i32
+    %is_zero = arith.cmpi eq, %b, %zero : i32
+    %division_error = monad.error.make : !error_div_by_zero
+    %division_failure = monad.throw %division_error : !error_div_by_zero -> !monad.either<!errors_arith>
+    %divisor_check = arith.select %is_zero, %division_failure, %pass : !monad.either<!errors_arith>
+    monad.bind %divisor_check, ^divisor_nonzero : !monad.either<!errors_arith>
+  ^divisor_nonzero:
+    %int_min = arith.constant -2147483648 : i32
+    %minus_one = arith.constant -1 : i32
+    %a_is_int_min = arith.cmpi eq, %a, %int_min : i32
+    %b_is_minus_one = arith.cmpi eq, %b, %minus_one : i32
+    %overflows = arith.andi %a_is_int_min, %b_is_minus_one : i1
+    %overflow_error = monad.error.make : !error_overflow
+    %overflow_failure = monad.throw %overflow_error : !error_overflow -> !monad.either<!errors_arith>
+    %overflow_check = arith.select %overflows, %overflow_failure, %pass : !monad.either<!errors_arith>
+    monad.bind %overflow_check, ^safe : !monad.either<!errors_arith>
+  ^safe:
+    %quotient = arith.divsi %a, %b : i32
+    %success = monad.return %quotient : !monad.either<!errors_arith, i32>
+    monad.yield %success : !monad.either<!errors_arith, i32>
+  }
+  return %result : !monad.either<!errors_arith, i32>
+}
+
+// A catch is one switch on the tag: 0 goes to ^ok, a caught error to its
+// handler, and the default leaves the do with the error.
+// CHECK-LABEL: func.func @half_ratio
+// CHECK: %[[RATIO:.+]]:2 = call @safe_div
+// CHECK: cf.switch %[[RATIO]]#0 : i32, [
+// CHECK-NEXT: default: ^[[EXIT:.+]](%[[RATIO]]#0, %{{.+}} : i32, i32),
+// CHECK-NEXT: 0: ^[[OK:.+]](%[[RATIO]]#1 : i32),
+// CHECK-NEXT: 1855107791: ^[[RECOVER:.+]]
+// CHECK-NEXT: ]
+// CHECK: ^[[OK]](%{{.+}}: i32):
+// CHECK: cf.br ^[[EXIT]]
+// CHECK: ^[[RECOVER]]:
+// CHECK: cf.br ^[[EXIT]]
+// CHECK: ^[[EXIT]](%[[TAG:.+]]: i32, %[[VALUE:.+]]: i32):
+// CHECK: return %[[TAG]], %[[VALUE]] : i32, i32
+func.func @half_ratio(%a: i32, %b: i32) -> !monad.either<!errors_overflow, i32> {
+  %result = monad.do : !monad.either<!errors_overflow, i32> {
+    %ratio = func.call @safe_div(%a, %b) : (i32, i32) -> !monad.either<!errors_arith, i32>
+    monad.catch %ratio, ^ok [!error_div_by_zero -> ^recover] : !monad.either<!errors_arith, i32>
+  ^ok(%quotient: i32):
+    %success = monad.return %quotient : !monad.either<!errors_overflow, i32>
+    monad.yield %success : !monad.either<!errors_overflow, i32>
+  ^recover(%division_error: !error_div_by_zero):
+    %zero = arith.constant 0 : i32
+    %recovered = monad.return %zero : !monad.either<!errors_overflow, i32>
+    monad.yield %recovered : !monad.either<!errors_overflow, i32>
+  }
+  return %result : !monad.either<!errors_overflow, i32>
+}
+
+// Stub of transform.structured.tile_using_forall: silenceable failure on 0,
+// otherwise the handles %target + 10 and %target + 20.
+// CHECK-LABEL: func.func @tile_using_forall
+// CHECK-SAME: -> (i32, i32, i32)
+func.func @tile_using_forall(%target: i32) -> !monad.either<!errors_tiling, i32, i32> {
+  %zero = arith.constant 0 : i32
+  %ten = arith.constant 10 : i32
+  %twenty = arith.constant 20 : i32
+  %is_zero = arith.cmpi eq, %target, %zero : i32
+  %error = monad.error.make : !error_silenceable
+  %failure = monad.throw %error : !error_silenceable -> !monad.either<!errors_tiling, i32, i32>
+  %tiled_op = arith.addi %target, %ten : i32
+  %loop = arith.addi %target, %twenty : i32
+  %success = monad.return %tiled_op, %loop : !monad.either<!errors_tiling, i32, i32>
+  %result = arith.select %is_zero, %failure, %success : !monad.either<!errors_tiling, i32, i32>
+  return %result : !monad.either<!errors_tiling, i32, i32>
+}
+
+// Stub of transform.structured.fuse_into_containing_op: definite failure if
+// %producer is 2, silenceable failure if %containing is 1, otherwise the
+// handles %producer + 100 and %containing + 200.
+// CHECK-LABEL: func.func @fuse_into_containing_op
+// CHECK-SAME: -> (i32, i32, i32)
+func.func @fuse_into_containing_op(%producer: i32, %containing: i32)
+    -> !monad.either<!errors_fusion, i32, i32> {
+  %one = arith.constant 1 : i32
+  %two = arith.constant 2 : i32
+  %hundred = arith.constant 100 : i32
+  %two_hundred = arith.constant 200 : i32
+  %is_definite = arith.cmpi eq, %producer, %two : i32
+  %is_silenceable = arith.cmpi eq, %containing, %one : i32
+  %definite_error = monad.error.make : !error_definite
+  %definite = monad.throw %definite_error : !error_definite -> !monad.either<!errors_fusion, i32, i32>
+  %silenceable_error = monad.error.make : !error_silenceable
+  %silenceable = monad.throw %silenceable_error : !error_silenceable -> !monad.either<!errors_fusion, i32, i32>
+  %fused_op = arith.addi %producer, %hundred : i32
+  %new_loop = arith.addi %containing, %two_hundred : i32
+  %success = monad.return %fused_op, %new_loop : !monad.either<!errors_fusion, i32, i32>
+  %not_definite = arith.select %is_silenceable, %silenceable, %success : !monad.either<!errors_fusion, i32, i32>
+  %result = arith.select %is_definite, %definite, %not_definite : !monad.either<!errors_fusion, i32, i32>
+  return %result : !monad.either<!errors_fusion, i32, i32>
+}
+
+// Nested dos are inlined outer first; each ends in its own exit block, and
+// the bind of the inner result tests its tag.
+// CHECK-LABEL: func.func @tile_and_fuse
+// CHECK-SAME: -> (i32, i32, i32)
+// CHECK: call @tile_using_forall
+// CHECK: cf.switch
+// CHECK: 0: ^{{.+}}(%{{.+}}, %{{.+}} : i32, i32),
+// CHECK-NEXT: 2016990996: ^
+// CHECK: arith.cmpi eq
+// CHECK: cf.cond_br
+// CHECK: call @fuse_into_containing_op
+// CHECK: cf.switch
+// CHECK: 2016990996: ^
+// CHECK-NOT: monad.
+func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !monad.either<!errors_definite, i32, i32> {
+  %result = monad.do : !monad.either<!errors_definite, i32, i32> {
+    %tiled_or_untiled = monad.do : !monad.either<!errors_definite, i32, i32> {
+      %tiling = func.call @tile_using_forall(%matmul) : (i32) -> !monad.either<!errors_tiling, i32, i32>
+      monad.catch %tiling, ^tiled [!error_silenceable -> ^tiling_suppressed] : !monad.either<!errors_tiling, i32, i32>
+    ^tiled(%tiled_op: i32, %tiled_loop: i32):
+      %tiled_pair = monad.return %tiled_op, %tiled_loop : !monad.either<!errors_definite, i32, i32>
+      monad.yield %tiled_pair : !monad.either<!errors_definite, i32, i32>
+    ^tiling_suppressed(%tiling_error: !error_silenceable):
+      %untiled_pair = monad.return %matmul, %matmul : !monad.either<!errors_definite, i32, i32>
+      monad.yield %untiled_pair : !monad.either<!errors_definite, i32, i32>
+    }
+    monad.bind %tiled_or_untiled, ^after_tiling : !monad.either<!errors_definite, i32, i32>
+  ^after_tiling(%tiled_or_matmul: i32, %loop: i32):
+    %fused_or_unfused = monad.do : !monad.either<!errors_definite, i32, i32> {
+      %fusion = func.call @fuse_into_containing_op(%producer, %loop) : (i32, i32) -> !monad.either<!errors_fusion, i32, i32>
+      monad.catch %fusion, ^fused [!error_silenceable -> ^fusion_suppressed] : !monad.either<!errors_fusion, i32, i32>
+    ^fused(%fused_op: i32, %new_loop: i32):
+      %fused_pair = monad.return %fused_op, %new_loop : !monad.either<!errors_definite, i32, i32>
+      monad.yield %fused_pair : !monad.either<!errors_definite, i32, i32>
+    ^fusion_suppressed(%fusion_error: !error_silenceable):
+      %unfused_pair = monad.return %producer, %loop : !monad.either<!errors_definite, i32, i32>
+      monad.yield %unfused_pair : !monad.either<!errors_definite, i32, i32>
+    }
+    monad.yield %fused_or_unfused : !monad.either<!errors_definite, i32, i32>
+  }
+  return %result : !monad.either<!errors_definite, i32, i32>
+}
+
+// A general either is an i1 (set for a left), the left value, and the values.
+// CHECK-LABEL: func.func @first_negative
+// CHECK-SAME: -> i32
+// CHECK: arith.constant true
+// CHECK: cf.cond_br
+// CHECK-NOT: monad.
+func.func @first_negative(%x: i32, %y: i32, %z: i32) -> i32 {
+  %search = monad.do : !monad.either<i32> {
+    %keep_searching = monad.return : !monad.either<i32>
+    %zero = arith.constant 0 : i32
+    %x_is_negative = arith.cmpi slt, %x, %zero : i32
+    %found_x = monad.either.left %x : !monad.either<i32>
+    %x_step = arith.select %x_is_negative, %found_x, %keep_searching : !monad.either<i32>
+    monad.bind %x_step, ^check_y : !monad.either<i32>
+  ^check_y:
+    %y_is_negative = arith.cmpi slt, %y, %zero : i32
+    %found_y = monad.either.left %y : !monad.either<i32>
+    %y_step = arith.select %y_is_negative, %found_y, %keep_searching : !monad.either<i32>
+    monad.bind %y_step, ^check_z : !monad.either<i32>
+  ^check_z:
+    %z_is_negative = arith.cmpi slt, %z, %zero : i32
+    %found_z = monad.either.left %z : !monad.either<i32>
+    %z_step = arith.select %z_is_negative, %found_z, %keep_searching : !monad.either<i32>
+    monad.yield %z_step : !monad.either<i32>
+  }
+  monad.either.branch %search, left ^found, right ^not_found : !monad.either<i32>
+^found(%value: i32):
+  return %value : i32
+^not_found:
+  %not_found_result = arith.constant 0 : i32
+  return %not_found_result : i32
+}
+
+// An error with a payload occupies its payload slots; a catch without ^ok
+// passes a right through, and the handler reads the payload.
+// CHECK-LABEL: func.func @clamp_index
+// CHECK-SAME: -> (i32, i32, i32, i32)
+// CHECK: cf.switch
+// CHECK: 0: ^[[EXIT:.+]](%{{.+}}, %{{.+}}, %{{.+}}, %{{.+}} : i32, i32, i32, i32),
+// CHECK-NEXT: {{[0-9]+}}: ^[[HANDLER:.+]](%{{.+}}, %{{.+}} : i32, i32)
+// CHECK: ^[[HANDLER]](%[[INDEX:.+]]: i32, %[[SIZE:.+]]: i32):
+// CHECK: arith.subi %[[SIZE]]
+func.func @clamp_index(%index: i32, %size: i32) -> !monad.either<!errors_bounds, i32> {
+  %result = monad.do : !monad.either<!errors_bounds, i32> {
+    %in_bounds = arith.cmpi slt, %index, %size : i32
+    %error = monad.error.make %index, %size : !error_out_of_bounds
+    %failure = monad.throw %error : !error_out_of_bounds -> !monad.either<!errors_bounds, i32>
+    %success = monad.return %index : !monad.either<!errors_bounds, i32>
+    %checked = arith.select %in_bounds, %success, %failure : !monad.either<!errors_bounds, i32>
+    monad.catch %checked [!error_out_of_bounds -> ^clamp] : !monad.either<!errors_bounds, i32>
+  ^clamp(%bounds_error: !error_out_of_bounds):
+    %bad_index, %bad_size = monad.error.payload %bounds_error : !error_out_of_bounds
+    %one = arith.constant 1 : i32
+    %last = arith.subi %bad_size, %one : i32
+    %clamped = monad.return %last : !monad.either<!errors_bounds, i32>
+    monad.yield %clamped : !monad.either<!errors_bounds, i32>
+  }
+  return %result : !monad.either<!errors_bounds, i32>
+}
+
+//===----------------------------------------------------------------------===//
+// Checks for @main
+//===----------------------------------------------------------------------===//
+
+// Returns whether %m is a right holding %expected.
+func.func @holds(%m: !monad.either<!errors_arith, i32>, %expected: i32) -> i1 {
+  monad.either.branch %m, left ^left, right ^right : !monad.either<!errors_arith, i32>
+^left(%error: !errors_arith):
+  %false = arith.constant false
+  return %false : i1
+^right(%value: i32):
+  %equal = arith.cmpi eq, %value, %expected : i32
+  return %equal : i1
+}
+
+// Returns whether %m holds the error overflow (with %overflow set) or
+// div_by_zero (with %overflow cleared).
+func.func @throws(%m: !monad.either<!errors_arith, i32>, %overflow: i1) -> i1 {
+  %caught = monad.do : !monad.either<!no_errors, i1> {
+    monad.catch %m, ^ok [!error_overflow -> ^is_overflow,
+                         !monad.error_union<{!error_div_by_zero}> -> ^is_division]
+        : !monad.either<!errors_arith, i32>
+  ^ok(%value: i32):
+    %false = arith.constant false
+    %no = monad.return %false : !monad.either<!no_errors, i1>
+    monad.yield %no : !monad.either<!no_errors, i1>
+  ^is_overflow(%overflow_error: !error_overflow):
+    %yes = monad.return %overflow : !monad.either<!no_errors, i1>
+    monad.yield %yes : !monad.either<!no_errors, i1>
+  ^is_division(%division_error: !monad.error_union<{!error_div_by_zero}>):
+    %true = arith.constant true
+    %not_overflow = arith.xori %overflow, %true : i1
+    %division = monad.return %not_overflow : !monad.either<!no_errors, i1>
+    monad.yield %division : !monad.either<!no_errors, i1>
+  }
+  monad.either.branch %caught, left ^impossible, right ^done : !monad.either<!no_errors, i1>
+^impossible(%none: !no_errors):
+  %false = arith.constant false
+  return %false : i1
+^done(%answer: i1):
+  return %answer : i1
+}
+
+// Returns whether %m is a right holding the handles %first and %second.
+func.func @holds_pair(%m: !monad.either<!errors_definite, i32, i32>, %first: i32, %second: i32) -> i1 {
+  monad.either.branch %m, left ^left, right ^right : !monad.either<!errors_definite, i32, i32>
+^left(%error: !errors_definite):
+  %false = arith.constant false
+  return %false : i1
+^right(%a: i32, %b: i32):
+  %first_equal = arith.cmpi eq, %a, %first : i32
+  %second_equal = arith.cmpi eq, %b, %second : i32
+  %equal = arith.andi %first_equal, %second_equal : i1
+  return %equal : i1
+}
+
+// Returns whether %m is a left.
+func.func @fails(%m: !monad.either<!errors_definite, i32, i32>) -> i1 {
+  monad.either.branch %m, left ^left, right ^right : !monad.either<!errors_definite, i32, i32>
+^left(%error: !errors_definite):
+  %true = arith.constant true
+  return %true : i1
+^right(%a: i32, %b: i32):
+  %false = arith.constant false
+  return %false : i1
+}
+
+// Returns 0 if every check passes, otherwise the number of the first failing
+// check.
+func.func @main() -> i32 {
+  %true = arith.constant true
+  %false = arith.constant false
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %two = arith.constant 2 : i32
+  %three = arith.constant 3 : i32
+  %five = arith.constant 5 : i32
+  %six = arith.constant 6 : i32
+  %seven = arith.constant 7 : i32
+  %minus_one = arith.constant -1 : i32
+  %minus_four = arith.constant -4 : i32
+  %minus_five = arith.constant -5 : i32
+  %minus_nineteen = arith.constant -19 : i32
+  %int_min = arith.constant -2147483648 : i32
+  %c106 = arith.constant 106 : i32
+  %c200 = arith.constant 200 : i32
+  %c225 = arith.constant 225 : i32
+  %c9 = arith.constant 9 : i32
+  %c10 = arith.constant 10 : i32
+
+  // 1-3: safe_div(7, 2) = 3, safe_div(7, 0) = div_by_zero,
+  // safe_div(INT_MIN, -1) = overflow.
+  %r1 = func.call @safe_div(%seven, %two) : (i32, i32) -> !monad.either<!errors_arith, i32>
+  %ok1 = func.call @holds(%r1, %three) : (!monad.either<!errors_arith, i32>, i32) -> i1
+  %r2 = func.call @safe_div(%seven, %zero) : (i32, i32) -> !monad.either<!errors_arith, i32>
+  %ok2 = func.call @throws(%r2, %false) : (!monad.either<!errors_arith, i32>, i1) -> i1
+  %r3 = func.call @safe_div(%int_min, %minus_one) : (i32, i32) -> !monad.either<!errors_arith, i32>
+  %ok3 = func.call @throws(%r3, %true) : (!monad.either<!errors_arith, i32>, i1) -> i1
+
+  // 4-6: half_ratio(7, 2) = 3, half_ratio(7, 0) = 0,
+  // half_ratio(INT_MIN, -1) = overflow, widened to reuse the checks.
+  %h4 = func.call @half_ratio(%seven, %two) : (i32, i32) -> !monad.either<!errors_overflow, i32>
+  %r4 = monad.widen %h4 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %ok4 = func.call @holds(%r4, %three) : (!monad.either<!errors_arith, i32>, i32) -> i1
+  %h5 = func.call @half_ratio(%seven, %zero) : (i32, i32) -> !monad.either<!errors_overflow, i32>
+  %r5 = monad.widen %h5 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %ok5 = func.call @holds(%r5, %zero) : (!monad.either<!errors_arith, i32>, i32) -> i1
+  %h6 = func.call @half_ratio(%int_min, %minus_one) : (i32, i32) -> !monad.either<!errors_overflow, i32>
+  %r6 = monad.widen %h6 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %ok6 = func.call @throws(%r6, %true) : (!monad.either<!errors_arith, i32>, i1) -> i1
+
+  // 7-10: tile_and_fuse(5, 6) = (106, 225), tile_and_fuse(0, 6) = (106, 200),
+  // tile_and_fuse(-19, 6) = (6, 1), tile_and_fuse(5, 2) = definite.
+  %r7 = func.call @tile_and_fuse(%five, %six) : (i32, i32) -> !monad.either<!errors_definite, i32, i32>
+  %ok7 = func.call @holds_pair(%r7, %c106, %c225) : (!monad.either<!errors_definite, i32, i32>, i32, i32) -> i1
+  %r8 = func.call @tile_and_fuse(%zero, %six) : (i32, i32) -> !monad.either<!errors_definite, i32, i32>
+  %ok8 = func.call @holds_pair(%r8, %c106, %c200) : (!monad.either<!errors_definite, i32, i32>, i32, i32) -> i1
+  %check9_expected_first = arith.constant 6 : i32
+  %r9 = func.call @tile_and_fuse(%minus_nineteen, %six) : (i32, i32) -> !monad.either<!errors_definite, i32, i32>
+  %ok9 = func.call @holds_pair(%r9, %check9_expected_first, %one) : (!monad.either<!errors_definite, i32, i32>, i32, i32) -> i1
+  %r10 = func.call @tile_and_fuse(%five, %two) : (i32, i32) -> !monad.either<!errors_definite, i32, i32>
+  %ok10 = func.call @fails(%r10) : (!monad.either<!errors_definite, i32, i32>) -> i1
+
+  // 11-12: first_negative(3, -4, -5) = -4, first_negative(1, 2, 3) = 0.
+  %r11 = func.call @first_negative(%three, %minus_four, %minus_five) : (i32, i32, i32) -> i32
+  %ok11 = arith.cmpi eq, %r11, %minus_four : i32
+  %r12 = func.call @first_negative(%one, %two, %three) : (i32, i32, i32) -> i32
+  %ok12 = arith.cmpi eq, %r12, %zero : i32
+
+  // 13: clamp_index(10, 10) = 9, from the payload of out_of_bounds.
+  %r13 = func.call @clamp_index(%c10, %c10) : (i32, i32) -> !monad.either<!errors_bounds, i32>
+  monad.either.branch %r13, left ^bounds_left, right ^bounds_right : !monad.either<!errors_bounds, i32>
+^bounds_left(%bounds_error: !errors_bounds):
+  return %c10 : i32
+^bounds_right(%clamped: i32):
+  %ok13 = arith.cmpi eq, %clamped, %c9 : i32
+
+  %results = arith.constant 0 : i32
+  %f13 = arith.constant 13 : i32
+  %f12 = arith.constant 12 : i32
+  %f11 = arith.constant 11 : i32
+  %f10 = arith.constant 10 : i32
+  %f9 = arith.constant 9 : i32
+  %f8 = arith.constant 8 : i32
+  %f7 = arith.constant 7 : i32
+  %f6 = arith.constant 6 : i32
+  %f5 = arith.constant 5 : i32
+  %f4 = arith.constant 4 : i32
+  %f3 = arith.constant 3 : i32
+  %f2 = arith.constant 2 : i32
+  %f1 = arith.constant 1 : i32
+  %s13 = arith.select %ok13, %results, %f13 : i32
+  %s12 = arith.select %ok12, %s13, %f12 : i32
+  %s11 = arith.select %ok11, %s12, %f11 : i32
+  %s10 = arith.select %ok10, %s11, %f10 : i32
+  %s9 = arith.select %ok9, %s10, %f9 : i32
+  %s8 = arith.select %ok8, %s9, %f8 : i32
+  %s7 = arith.select %ok7, %s8, %f7 : i32
+  %s6 = arith.select %ok6, %s7, %f6 : i32
+  %s5 = arith.select %ok5, %s6, %f5 : i32
+  %s4 = arith.select %ok4, %s5, %f4 : i32
+  %s3 = arith.select %ok3, %s4, %f3 : i32
+  %s2 = arith.select %ok2, %s3, %f2 : i32
+  %s1 = arith.select %ok1, %s2, %f1 : i32
+  return %s1 : i32
+}
