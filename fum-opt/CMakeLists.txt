@@ -1,5 +1,6 @@
 set(LIBS
     MLIRArithDialect
+    MLIRControlFlowDialect
     MLIROptLib
     MLIRRegisterAllDialects
     MLIRRegisterAllPasses
@@ -7,7 +8,9 @@ set(LIBS
     MLIRDepInterfaces
     MLIRDepTransforms
     MLIRMonadDialect
+    MLIRMonadTransforms
     MLIRTransformDialect
+    MLIRUBDialect
   )
 add_llvm_executable(fum-opt fum-opt.cpp)
 
