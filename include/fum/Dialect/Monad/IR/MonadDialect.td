@@ -20,16 +20,18 @@ def Monad_Dialect : Dialect {
   let summary = "A dialect for monadic computations in MLIR";
   let description = [{
     This dialect expresses monadic computations: monadic types, such as
-    `!monad.maybe<T>`, operations that construct monadic values, and
+    `!monad.maybe<T>` and `!monad.value_or_exception<T>`, operations that construct monadic values, and
     `monad.do` regions in which `monad.bind` sequences monadic values.
   }];
   let cppNamespace = "::mlir::monad";
 
   let useDefaultTypePrinterParser = 1;
-  let useDefaultAttributePrinterParser = 1;
+  let hasOperationAttrVerify = 1;
   let extraClassDeclaration = [{
-    /// Registers the attributes of the dialect.
-    void registerAttributes();
+    /// Name of the optional function attribute listing the exception kinds
+    /// that the function may throw.
+    static constexpr ::llvm::StringLiteral kMayThrowAttrName =
+        "monad.may_throw";
     /// Registers the types of the dialect.
     void registerTypes();
   }];

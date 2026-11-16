@@ -38,33 +38,35 @@ def MonadMaybeType : Monad_Type<"Maybe", "maybe", [MonadTypeInterface]> {
   }];
 }
 
-def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
-  let summary = "Either monad type";
+def MonadExceptionType : Monad_Type<"Exception", "exception"> {
+  let summary = "Exception type";
   let description = [{
-    A value of type `!monad.either<[T1, ..., Tn] throws {E1, ..., Em}>` is
-    either a success carrying one value of each type `T1`, ..., `Tn`, or a
-    failure carrying exactly one error from the set `E1`, ..., `Em`. The value
-    types are an ordered list and the errors a set; both may be empty. The
-    errors are kept sorted by name and are distinct; the parser accepts them in
-    any order.
+    A value of type `!monad.exception` is an exception: a kind, which is a
+    symbol declared by `monad.exception.declare`, and the payload values that
+    the kind declares. Every exception has this one type, so the set of kinds
+    is open.
+  }];
+}
+
+def MonadValueOrExceptionType
+    : Monad_Type<"ValueOrException", "value_or_exception",
+                 [MonadTypeInterface]> {
+  let summary = "Value-or-exception monad type";
+  let description = [{
+    A value of type `!monad.value_or_exception<T1, ..., Tn>` is either a
+    success carrying one value of each type `T1`, ..., `Tn`, or a failure
+    carrying one `!monad.exception`. The type does not say which exception
+    kinds may occur. The list of value types may be empty.
 
     ```mlir
-    // Either an i32, or an overflow or a division by zero.
-    !monad.either<[i32] throws {#monad.error<"div_by_zero">,
-                                #monad.error<"overflow">}>
+    !monad.value_or_exception<i32>
     ```
   }];
   let parameters = (ins
-      OptionalArrayRefParameter<"::mlir::Type", "value types">:$valueTypes,
-      OptionalArrayRefParameter<"::mlir::monad::ErrorAttr", "errors">:$errors);
-  let assemblyFormat = [{
-    `<` `[` custom<ValueTypes>($valueTypes) `]` `throws`
-    custom<ErrorSet>($errors) `>`
-  }];
-  let genVerifyDecl = 1;
+      OptionalArrayRefParameter<"::mlir::Type", "value types">:$valueTypes);
+  let assemblyFormat = "`<` custom<ValueTypes>($valueTypes) `>`";
   let extraClassDeclaration = [{
-    /// Returns the either type with the given value types and the errors of
-    /// this type.
+    /// Returns the value-or-exception type with the given value types.
     MonadTypeInterface cloneWithValueTypes(::mlir::TypeRange valueTypes) const;
   }];
 }

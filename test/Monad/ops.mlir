@@ -1,6 +1,13 @@
 // RUN: fum-opt %s | fum-opt | FileCheck %s
 // RUN: fum-opt %s --mlir-print-op-generic | fum-opt | FileCheck %s
 
+// The exception types print as aliases.
+// CHECK-DAG: !exception = !monad.exception
+// CHECK-DAG: !voe = !monad.value_or_exception<>
+// CHECK-DAG: !voe_i32 = !monad.value_or_exception<i32>
+// CHECK-DAG: !voe_i8_f32 = !monad.value_or_exception<i8, f32>
+// CHECK-DAG: !{{voe[0-9]*}} = !monad.value_or_exception<!monad.maybe<i32>>
+
 // Round-trip the maybe type with one, several, no, and nested value types.
 // CHECK-LABEL: func.func private @maybe_types
 // CHECK-SAME: !monad.maybe<i32>
@@ -81,56 +88,133 @@ func.func @do_single_block(%input: !monad.maybe<i32>) -> !monad.maybe<i32> {
   return %result : !monad.maybe<i32>
 }
 
-// Error used by the either tests.
-#overflow_err = #monad.error<"overflow">
+// Exception kinds used by the value-or-exception tests.
+// CHECK: monad.exception.declare @div_by_zero{{$}}
+// CHECK: monad.exception.declare @overflow{{$}}
+// CHECK: monad.exception.declare @io(i32)
+// CHECK: monad.exception.declare @timeout(i32)
+// CHECK: monad.exception.declare @pair(i1, index)
+monad.exception.declare @div_by_zero
+monad.exception.declare @overflow
+monad.exception.declare @io(i32)
+monad.exception.declare @timeout(i32)
+monad.exception.declare @pair(i1, index)
 
-// Round-trip the error attribute.
-// CHECK-LABEL: func.func private @error_attr
-// CHECK-SAME: error = #monad.error<"overflow">
-func.func private @error_attr() attributes {error = #overflow_err}
+// Round-trip the exception types with empty, one, several, and nested value
+// types; the types print as aliases (checked at the top of the file).
+// CHECK-LABEL: func.func private @exception_types
+// CHECK-SAME: (!exception, !voe, !voe_i32, !voe_i8_f32, !{{voe[0-9]*}})
+func.func private @exception_types(
+    !monad.exception,
+    !monad.value_or_exception<>,
+    !monad.value_or_exception<i32>,
+    !monad.value_or_exception<i8, f32>,
+    !monad.value_or_exception<!monad.maybe<i32>>)
 
-// Round-trip the either type with one, several, no, and nested value types,
-// and with one, several, and no errors.
-// CHECK-LABEL: func.func private @either_types
-// CHECK-SAME: !monad.either<[i32] throws {#monad.error<"overflow">}>
-// CHECK-SAME: !monad.either<[i8, i32] throws {#monad.error<"div_by_zero">, #monad.error<"overflow">}>
-// CHECK-SAME: !monad.either<[] throws {#monad.error<"overflow">}>
-// CHECK-SAME: !monad.either<[i32] throws {}>
-// CHECK-SAME: !monad.either<[!monad.maybe<i32>] throws {#monad.error<"overflow">}>
-func.func private @either_types(
-    !monad.either<[i32] throws {#overflow_err}>,
-    !monad.either<[i8, i32] throws {#monad.error<"div_by_zero">, #overflow_err}>,
-    !monad.either<[] throws {#overflow_err}>,
-    !monad.either<[i32] throws {}>,
-    !monad.either<[!monad.maybe<i32>] throws {#overflow_err}>)
+// The aliases parse back.
+// CHECK-LABEL: func.func private @exception_aliases
+// CHECK-SAME: (!exception, !voe_i32)
+!exception_alias = !monad.exception
+!voe_alias = !monad.value_or_exception<i32>
+func.func private @exception_aliases(!exception_alias, !voe_alias)
 
-// The errors are a set: they are printed sorted by name, whatever their order
-// in the input.
-// CHECK-LABEL: func.func private @either_error_order
-// CHECK-SAME: throws {#monad.error<"a">, #monad.error<"b">}
-func.func private @either_error_order(
-    !monad.either<[i32] throws {#monad.error<"b">, #monad.error<"a">}>)
+// The may_throw attribute lists declared kinds.
+// CHECK-LABEL: func.func private @may_throw
+// CHECK-SAME: attributes {monad.may_throw = [@div_by_zero, @io]}
+func.func private @may_throw() -> !monad.value_or_exception<i32>
+    attributes {monad.may_throw = [@div_by_zero, @io]}
 
-// Wrap a value as a success of the either monad.
-// CHECK-LABEL: func.func @either_return
-// CHECK: monad.return %{{.*}} : !monad.either<[i32] throws {#monad.error<"overflow">}>
-func.func @either_return(%value: i32) -> !monad.either<[i32] throws {#overflow_err}> {
-  %result = monad.return %value : !monad.either<[i32] throws {#overflow_err}>
-  return %result : !monad.either<[i32] throws {#overflow_err}>
+// Make exceptions without and with payloads, and throw them.
+// CHECK-LABEL: func.func @make_and_throw
+// CHECK: monad.exception.make @div_by_zero{{$}}
+// CHECK: monad.exception.make @io(%{{.*}}) : (i32)
+// CHECK: monad.exception.make @pair(%{{.*}}, %{{.*}}) : (i1, index)
+// CHECK: monad.throw %{{.*}} : !voe_i32
+func.func @make_and_throw(%code: i32, %flag: i1, %index: index)
+    -> !monad.value_or_exception<i32> {
+  %div_by_zero = monad.exception.make @div_by_zero
+  %io = monad.exception.make @io(%code) : (i32)
+  %pair = monad.exception.make @pair(%flag, %index) : (i1, index)
+  %failure = monad.throw %io : !monad.value_or_exception<i32>
+  return %failure : !monad.value_or_exception<i32>
 }
 
-// Bind an either value in a do with the same errors and other value types.
-// CHECK: monad.do : !monad.either<[f32] throws {#monad.error<"overflow">}>
-// CHECK: monad.bind %{{.*}}, ^[[NEXT:.+]] : !monad.either<[i32] throws {#monad.error<"overflow">}>
-// CHECK: ^[[NEXT]](%{{.*}}: i32):
-func.func @either_bind(%input: !monad.either<[i32] throws {#overflow_err}>)
-    -> !monad.either<[f32] throws {#overflow_err}> {
-  %result = monad.do : !monad.either<[f32] throws {#overflow_err}> {
-    monad.bind %input, ^next : !monad.either<[i32] throws {#overflow_err}>
+// Catch with ^ok, a grouped case with a payload, a case without payload, and
+// a default receiving the exception, which it re-throws.
+// CHECK-LABEL: func.func @catch_with_ok
+// CHECK: monad.catch %{{.*}}, ^[[OK:.+]] [@io, @timeout -> ^[[IO:.+]], @div_by_zero -> ^[[DIV:.+]], default -> ^[[OTHER:.+]]] : !voe_i32
+// CHECK: ^[[OK]](%{{.*}}: i32):
+// CHECK: ^[[IO]](%{{.*}}: i32):
+// CHECK: ^[[DIV]]:
+// CHECK: ^[[OTHER]](%{{.*}}: !exception):
+// CHECK: monad.throw %{{.*}} : !voe_i32
+func.func @catch_with_ok(%input: !monad.value_or_exception<i32>)
+    -> !monad.value_or_exception<i32> {
+  %result = monad.do : !monad.value_or_exception<i32> {
+    monad.catch %input, ^ok [@io, @timeout -> ^io, @div_by_zero -> ^div,
+                             default -> ^other] : !monad.value_or_exception<i32>
+  ^ok(%value: i32):
+    %success = monad.return %value : !monad.value_or_exception<i32>
+    monad.yield %success : !monad.value_or_exception<i32>
+  ^io(%code: i32):
+    %recovered = monad.return %code : !monad.value_or_exception<i32>
+    monad.yield %recovered : !monad.value_or_exception<i32>
+  ^div:
+    %c0 = arith.constant 0 : i32
+    %zero = monad.return %c0 : !monad.value_or_exception<i32>
+    monad.yield %zero : !monad.value_or_exception<i32>
+  ^other(%exception: !monad.exception):
+    %failure = monad.throw %exception : !monad.value_or_exception<i32>
+    monad.yield %failure : !monad.value_or_exception<i32>
+  }
+  return %result : !monad.value_or_exception<i32>
+}
+
+// Catch without ^ok and without default: success and unmatched failures end
+// the do with the input. Two kinds may also reach one block through two cases.
+// CHECK-LABEL: func.func @catch_without_ok
+// CHECK: monad.catch %{{.*}} [@div_by_zero -> ^[[RECOVER:.+]], @overflow -> ^[[RECOVER]]] : !voe_i32
+// CHECK: ^[[RECOVER]]:
+func.func @catch_without_ok(%input: !monad.value_or_exception<i32>)
+    -> !monad.value_or_exception<i32> {
+  %result = monad.do : !monad.value_or_exception<i32> {
+    monad.catch %input [@div_by_zero -> ^recover, @overflow -> ^recover]
+        : !monad.value_or_exception<i32>
+  ^recover:
+    %c0 = arith.constant 0 : i32
+    %zero = monad.return %c0 : !monad.value_or_exception<i32>
+    monad.yield %zero : !monad.value_or_exception<i32>
+  }
+  return %result : !monad.value_or_exception<i32>
+}
+
+// A catch with ^ok and no cases binds the input; its failure ends the do,
+// whose value types differ.
+// CHECK-LABEL: func.func @catch_no_cases
+// CHECK: monad.catch %{{.*}}, ^{{.+}} [] : !voe{{$}}
+func.func @catch_no_cases(%input: !monad.value_or_exception<>)
+    -> !monad.value_or_exception<i32> {
+  %result = monad.do : !monad.value_or_exception<i32> {
+    monad.catch %input, ^ok [] : !monad.value_or_exception<>
+  ^ok:
+    %c1 = arith.constant 1 : i32
+    %one = monad.return %c1 : !monad.value_or_exception<i32>
+    monad.yield %one : !monad.value_or_exception<i32>
+  }
+  return %result : !monad.value_or_exception<i32>
+}
+
+// Bind a value-or-exception value in a do with other value types.
+// CHECK-LABEL: func.func @value_or_exception_bind
+// CHECK: monad.bind %{{.*}}, ^{{.+}} : !voe_i32
+func.func @value_or_exception_bind(%input: !monad.value_or_exception<i32>)
+    -> !monad.value_or_exception<f32> {
+  %result = monad.do : !monad.value_or_exception<f32> {
+    monad.bind %input, ^next : !monad.value_or_exception<i32>
   ^next(%value: i32):
     %converted = arith.sitofp %value : i32 to f32
-    %wrapped = monad.return %converted : !monad.either<[f32] throws {#overflow_err}>
-    monad.yield %wrapped : !monad.either<[f32] throws {#overflow_err}>
+    %wrapped = monad.return %converted : !monad.value_or_exception<f32>
+    monad.yield %wrapped : !monad.value_or_exception<f32>
   }
-  return %result : !monad.either<[f32] throws {#overflow_err}>
+  return %result : !monad.value_or_exception<f32>
 }
