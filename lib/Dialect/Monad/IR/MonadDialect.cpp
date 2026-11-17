@@ -28,10 +28,6 @@ struct MonadOpAsmDialectInterface : public OpAsmDialectInterface {
       return AliasResult::FinalAlias;
     }
     if (ErrorUnionType errors = dyn_cast<ErrorUnionType>(type)) {
-      if (errors.getErrors().empty()) {
-        os << "no_errors";
-        return AliasResult::OverridableAlias;
-      }
       os << "errors";
       for (ErrorType error : errors.getErrors())
         os << "_" << error.getName().getValue();

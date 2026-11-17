@@ -16,15 +16,16 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
   let description = [{
     Lowers the monad dialect to the `cf`, `arith`, and `ub` dialects. Each
     `monad.do` is inlined into the enclosing region, ending in a block that
-    receives the result; `monad.bind`, `monad.either.catch`, and
-    `monad.either.branch` become conditional branches and switches. Monadic
-    values are then expanded into several values:
+    receives the result; `monad.bind`, `monad.either.catch`,
+    `monad.either.branch`, and `monad.error_union.switch` become conditional
+    branches and switches. Monadic values are then expanded into several
+    values:
 
     - `!monad.maybe<T...>` becomes an `i1` (set for `some`) and `T...`;
-    - `!monad.either<!monad.error_union<{E...}>, R...>` becomes an `i32` tag
+    - `!monad.either<!monad.error_union<{E...}>, (R...)>` becomes an `i32` tag
       (0 for a right, otherwise the tag of the error), `R...`, and the
       payload slots of every error of the union;
-    - any other `!monad.either<L, R...>` becomes an `i1` (set for a left),
+    - any other `!monad.either<L, (R...)>` becomes an `i1` (set for a left),
       the values of `L`, and `R...`;
     - `!monad.error<"name", P...>` becomes `P...`, and
       `!monad.error_union<{E...}>` an `i32` tag and the payload slots.

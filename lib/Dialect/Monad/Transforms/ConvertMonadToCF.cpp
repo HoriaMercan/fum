@@ -11,8 +11,9 @@
 // 1. Control flow. Every `monad.do` is inlined into the enclosing region,
 //    outer first, like the `scf.execute_region` lowering: the region blocks
 //    are moved before a new exit block whose argument replaces the result.
-//    The terminators `monad.yield`, `monad.bind`, `monad.either.catch`, and
-//    `monad.either.branch` become `cf` branches. Their operands are still
+//    The terminators `monad.yield`, `monad.bind`, `monad.either.catch`,
+//    `monad.either.branch`, and `monad.error_union.switch` become `cf`
+//    branches. Their operands are still
 //    monadic values: the lowered values are read from and packed into
 //    monadic values with `builtin.unrealized_conversion_cast`.
 // 2. Types. A dialect conversion expands every monadic value into several
@@ -296,6 +297,58 @@ static void lowerBind(MonadBindOp bind, Block *exit, Type doType) {
   bind.erase();
 }
 
+/// The cases of a `cf.switch` on the tag of an error union.
+struct SwitchCases {
+  /// The tag of each case.
+  SmallVector<int32_t> values;
+  /// The successor of each case.
+  SmallVector<Block *> dests;
+  /// The successor operands of each case.
+  SmallVector<SmallVector<Value>> operands;
+};
+
+/// Appends to `cases` one case per error listed in `caseTypes`, the cases of
+/// `monad.either.catch` or `monad.error_union.switch` on a value of `errors`
+/// lowered to `tag` and `slots`: the case branches to the handler with the
+/// error, or with the group that lists it.
+static void appendCases(OpBuilder &builder, Location loc, ErrorUnionType errors,
+                        Value tag, ValueRange slots, ArrayAttr caseTypes,
+                        SuccessorRange handlers, SwitchCases &cases) {
+  for (auto [caseType, handler] :
+       llvm::zip_equal(caseTypes.getAsValueRange<TypeAttr>(), handlers)) {
+    if (ErrorType error = dyn_cast<ErrorType>(caseType)) {
+      SmallVector<Value> payload =
+          remapPayloadSlots(builder, loc, errors, slots,
+                            ErrorUnionType::get(builder.getContext(), {error}));
+      cases.values.push_back(getErrorTag(error.getName().getValue()));
+      cases.dests.push_back(handler);
+      cases.operands.push_back({pack(builder, loc, error, payload)});
+      continue;
+    }
+    ErrorUnionType group = cast<ErrorUnionType>(caseType);
+    SmallVector<Value> groupValues{tag};
+    llvm::append_range(groupValues,
+                       remapPayloadSlots(builder, loc, errors, slots, group));
+    Value groupValue = pack(builder, loc, group, groupValues);
+    for (ErrorType error : group.getErrors()) {
+      cases.values.push_back(getErrorTag(error.getName().getValue()));
+      cases.dests.push_back(handler);
+      cases.operands.push_back({groupValue});
+    }
+  }
+}
+
+/// Creates a `cf.switch` on `tag` with the cases `cases` and the default
+/// successor `defaultDest` with `defaultOperands`.
+static void createSwitch(OpBuilder &builder, Location loc, Value tag,
+                         Block *defaultDest, ValueRange defaultOperands,
+                         const SwitchCases &cases) {
+  SmallVector<ValueRange> operandRanges(cases.operands.begin(),
+                                        cases.operands.end());
+  cf::SwitchOp::create(builder, loc, tag, defaultDest, defaultOperands,
+                       cases.values, cases.dests, operandRanges);
+}
+
 /// Lowers `monad.either.catch` in a `monad.do` producing `doType` and ending in
 /// `exit` to one `cf.switch` on the tag.
 static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
@@ -317,48 +370,39 @@ static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
   Value defaultOperand = pack(builder, loc, doType, uncaught);
 
   // A right continues in ^ok, or ends the computation with the input.
-  SmallVector<int32_t> caseValues{0};
-  SmallVector<Block *> caseDests;
-  SmallVector<SmallVector<Value>> caseOperands;
+  SwitchCases cases;
+  cases.values.push_back(0);
   if (Block *ok = catchOp.getOk()) {
-    caseDests.push_back(ok);
-    caseOperands.push_back(
+    cases.dests.push_back(ok);
+    cases.operands.push_back(
         packEach(builder, loc, inputType.getValueTypes(), parts.values));
   } else {
-    caseDests.push_back(exit);
-    caseOperands.push_back({catchOp.getInput()});
+    cases.dests.push_back(exit);
+    cases.operands.push_back({catchOp.getInput()});
   }
 
-  // Every error of a case goes to the handler with the error, or the group.
-  for (auto [caseType, handler] :
-       llvm::zip_equal(catchOp.getCaseTypes().getAsValueRange<TypeAttr>(),
-                       catchOp.getHandlers())) {
-    if (ErrorType error = dyn_cast<ErrorType>(caseType)) {
-      SmallVector<Value> payload =
-          remapPayloadSlots(builder, loc, inputErrors, parts.slots,
-                            ErrorUnionType::get(builder.getContext(), {error}));
-      caseValues.push_back(getErrorTag(error.getName().getValue()));
-      caseDests.push_back(handler);
-      caseOperands.push_back({pack(builder, loc, error, payload)});
-      continue;
-    }
-    ErrorUnionType group = cast<ErrorUnionType>(caseType);
-    SmallVector<Value> groupValues{parts.tag};
-    llvm::append_range(groupValues, remapPayloadSlots(builder, loc, inputErrors,
-                                                      parts.slots, group));
-    Value groupValue = pack(builder, loc, group, groupValues);
-    for (ErrorType error : group.getErrors()) {
-      caseValues.push_back(getErrorTag(error.getName().getValue()));
-      caseDests.push_back(handler);
-      caseOperands.push_back({groupValue});
-    }
-  }
-
-  SmallVector<ValueRange> caseOperandRanges(caseOperands.begin(),
-                                            caseOperands.end());
-  cf::SwitchOp::create(builder, loc, parts.tag, exit, defaultOperand,
-                       caseValues, caseDests, caseOperandRanges);
+  appendCases(builder, loc, inputErrors, parts.tag, parts.slots,
+              catchOp.getCaseTypes(), catchOp.getHandlers(), cases);
+  createSwitch(builder, loc, parts.tag, exit, defaultOperand, cases);
   catchOp.erase();
+}
+
+/// Lowers `monad.error_union.switch` to a `cf.switch` on the tag. The cases
+/// list every member, so the last case is the default successor.
+static void lowerErrorUnionSwitch(MonadErrorUnionSwitchOp switchOp) {
+  OpBuilder builder(switchOp);
+  Location loc = switchOp.getLoc();
+  ErrorUnionType errors = switchOp.getInput().getType();
+  SmallVector<Value> lowered = unpack(builder, loc, switchOp.getInput());
+  Value tag = lowered.front();
+  SwitchCases cases;
+  appendCases(builder, loc, errors, tag, ValueRange(lowered).drop_front(),
+              switchOp.getCaseTypes(), switchOp.getHandlers(), cases);
+  Block *defaultDest = cases.dests.pop_back_val();
+  SmallVector<Value> defaultOperands = cases.operands.pop_back_val();
+  cases.values.pop_back();
+  createSwitch(builder, loc, tag, defaultDest, defaultOperands, cases);
+  switchOp.erase();
 }
 
 /// Lowers `monad.either.branch` to a conditional branch.
@@ -691,6 +735,9 @@ struct ConvertMonadToCFPass
     for (MonadDoOp doOp : doOps)
       lowerDo(doOp);
     module.walk([](MonadEitherBranchOp branch) { lowerEitherBranch(branch); });
+    module.walk([](MonadErrorUnionSwitchOp switchOp) {
+      lowerErrorUnionSwitch(switchOp);
+    });
 
     TypeConverter converter;
     converter.addConversion([](Type type) { return type; });

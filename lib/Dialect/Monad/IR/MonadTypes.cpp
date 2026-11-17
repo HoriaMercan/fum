@@ -39,6 +39,24 @@ static void printValueTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
   llvm::interleaveComma(valueTypes, printer);
 }
 
+/// Parses the value types of the right side of an either type: a possibly
+/// empty comma-separated list in parentheses.
+static ParseResult parseRightTypes(AsmParser &parser,
+                                   SmallVector<Type> &valueTypes) {
+  return parser.parseCommaSeparatedList(
+      AsmParser::Delimiter::Paren,
+      [&]() { return parser.parseType(valueTypes.emplace_back()); },
+      " in the right side of an either type");
+}
+
+/// Prints the value types of the right side of an either type in
+/// parentheses.
+static void printRightTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
+  printer << "(";
+  llvm::interleaveComma(valueTypes, printer);
+  printer << ")";
+}
+
 /// Sorts error types by name.
 static void sortErrors(MutableArrayRef<ErrorType> errors) {
   llvm::sort(errors, [](ErrorType lhs, ErrorType rhs) {
@@ -46,8 +64,8 @@ static void sortErrors(MutableArrayRef<ErrorType> errors) {
   });
 }
 
-/// Parses a possibly empty set of error types in braces, in any order, and
-/// rejects duplicate names, and sorts the errors by name.
+/// Parses a set of error types in braces, in any order, rejects duplicate
+/// names, and sorts the errors by name. The verifier rejects an empty set.
 static ParseResult parseErrorSet(AsmParser &parser,
                                  SmallVector<ErrorType> &errors) {
   if (parser.parseCommaSeparatedList(
@@ -127,11 +145,13 @@ ErrorUnionType::getChecked(function_ref<InFlightDiagnostic()> emitError,
   return Base::getChecked(emitError, context, sorted);
 }
 
-/// Verifies that the errors are sorted by name and that their names are
-/// distinct.
+/// Verifies that there is at least one error, that the errors are sorted by
+/// name, and that their names are distinct.
 LogicalResult
 ErrorUnionType::verify(function_ref<InFlightDiagnostic()> emitError,
                        ArrayRef<ErrorType> errors) {
+  if (errors.empty())
+    return emitError() << "expects at least one error";
   for (size_t index = 1, size = errors.size(); index < size; ++index)
     if (errors[index - 1].getName().getValue() >=
         errors[index].getName().getValue())

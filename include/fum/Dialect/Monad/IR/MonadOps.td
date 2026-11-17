@@ -175,6 +175,35 @@ def MonadErrorPayloadOp : Monad_Op<"error.payload", [
   let assemblyFormat = "$error attr-dict `:` qualified(type($error))";
 }
 
+def MonadErrorUnionSwitchOp : Monad_Op<"error_union.switch", [
+    Terminator,
+    DeclareOpInterfaceMethods<BranchOpInterface>]> {
+  let summary = "Branches on the member of an error union";
+  let description = [{
+    Branches to the handler of the case that lists the error held by the
+    input. A case is an error type, or an error union for a group of errors;
+    its handler takes one argument of the case type. The cases are disjoint,
+    and together they list every member of the union. The successor arguments
+    are produced by the switch, which forwards no operands.
+
+    ```mlir
+    monad.error_union.switch %e [!monad.error<"div_by_zero"> -> ^division,
+                                 !monad.error<"overflow"> -> ^overflow]
+        : !monad.error_union<{!monad.error<"div_by_zero">,
+                              !monad.error<"overflow">}>
+    ^division(%d: !monad.error<"div_by_zero">):
+    ^overflow(%o: !monad.error<"overflow">):
+    ```
+  }];
+  let arguments = (ins MonadErrorUnionType:$input, TypeArrayAttr:$caseTypes);
+  let successors = (successor VariadicSuccessor<AnySuccessor>:$handlers);
+  let assemblyFormat = [{
+    $input custom<Cases>($caseTypes, $handlers) attr-dict `:`
+    qualified(type($input))
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Either operations
 //===----------------------------------------------------------------------===//
@@ -189,7 +218,7 @@ def MonadEitherLeftOp : Monad_Op<"either.left", [
     Creates the left either value carrying the given value.
 
     ```mlir
-    %m = monad.either.left %x : !monad.either<i32, f32>
+    %m = monad.either.left %x : !monad.either<i32, (f32)>
     ```
   }];
   let arguments = (ins AnyType:$value);
@@ -208,7 +237,7 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
     arguments are produced by the branch, which forwards no operands.
 
     ```mlir
-    monad.either.branch %m, left ^l, right ^r : !monad.either<i32, f32>
+    monad.either.branch %m, left ^l, right ^r : !monad.either<i32, (f32)>
     ^l(%x: i32):
     ^r(%y: f32):
     ```
@@ -234,7 +263,7 @@ def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
 
     ```mlir
     %m = monad.either.throw %e : !monad.error<"overflow">
-        -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
+        -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, (i32)>
     ```
   }];
   let arguments = (ins MonadErrorType:$error);
@@ -270,7 +299,7 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
     ```mlir
     monad.either.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
         : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
-                                            !monad.error<"overflow">}>, i32>
+                                            !monad.error<"overflow">}>, (i32)>
     ^ok(%x: i32):
     ^recover(%e: !monad.error<"div_by_zero">):
     ```
@@ -299,9 +328,9 @@ def MonadEitherWidenOp : Monad_Op<"either.widen", [
 
     ```mlir
     %w = monad.either.widen %m
-        : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+        : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
         to !monad.either<!monad.error_union<{!monad.error<"a">,
-                                             !monad.error<"b">}>, i32>
+                                             !monad.error<"b">}>, (i32)>
     ```
   }];
   let arguments = (ins MonadEitherType:$input);
