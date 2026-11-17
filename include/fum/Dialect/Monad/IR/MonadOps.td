@@ -302,43 +302,6 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
   let hasVerifier = 1;
 }
 
-def MonadEitherCatchOp : Monad_Op<"either.catch", [
-    Terminator,
-    HasParent<"MonadDoOp">,
-    DeclareOpInterfaceMethods<BranchOpInterface>]> {
-  let summary = "Handles the left of an either value";
-  let description = [{
-    Continues the enclosing `monad.do` depending on the side of the input,
-    as Haskell's `catchError` does for `Either`:
-
-    - a left branches to `left` with the left value, whatever its type;
-    - a right branches to `right` with its values; without `right`, the
-      `monad.do` ends with the input, whose type must then be the result
-      type of the `monad.do`.
-
-    The successor arguments are produced by the catch, which forwards no
-    operands. `monad.error.catch` is the same with the left dispatched on
-    its errors.
-
-    ```mlir
-    monad.either.catch %m, left ^handler, right ^ok : !monad.either<i32, f32>
-    ^handler(%l: i32):
-    ^ok(%r: f32):
-    ```
-  }];
-  let arguments = (ins MonadEitherType:$input, UnitAttr:$hasRight);
-  let successors = (successor VariadicSuccessor<AnySuccessor>:$dests);
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-  let extraClassDeclaration = [{
-    /// Returns the successor of a left.
-    ::mlir::Block *getLeft();
-    /// Returns the successor of a right, or null if a right ends the
-    /// enclosing monad.do.
-    ::mlir::Block *getRight();
-  }];
-}
-
 //===----------------------------------------------------------------------===//
 // Exception operations: either whose left type is an error or an error union
 //===----------------------------------------------------------------------===//

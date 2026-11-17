@@ -659,37 +659,3 @@ func.func @switch_default_wrong_argument(%error: !monad.error_union<{!monad.erro
 ^rest(%rest: !monad.error<@b>):
   return
 }
-
-// -----
-
-func.func @either_catch_left_wrong_argument(%input: !monad.either<i32, f32>) {
-  %result = monad.do : !monad.either<i32, f32> {
-    // expected-error @below {{expects the left successor to take one argument of type 'i32'}}
-    monad.either.catch %input, left ^left : !monad.either<i32, f32>
-  ^left(%l: i64):
-    monad.yield %input : !monad.either<i32, f32>
-  }
-  return
-}
-
-// -----
-
-func.func @either_catch_without_right_other_type(%input: !monad.either<i32, f32>) {
-  %result = monad.do : !monad.either<i32, i32> {
-    // expected-error @below {{expects the input to be of the result type of the enclosing monad.do without a right successor}}
-    monad.either.catch %input, left ^left : !monad.either<i32, f32>
-  ^left(%l: i32):
-    %right = monad.return %l : !monad.either<i32, i32>
-    monad.yield %right : !monad.either<i32, i32>
-  }
-  return
-}
-
-// -----
-
-func.func @either_catch_outside_do(%input: !monad.either<i32, f32>) {
-  // expected-error @below {{expects parent op 'monad.do'}}
-  monad.either.catch %input, left ^left : !monad.either<i32, f32>
-^left(%l: i32):
-  return
-}

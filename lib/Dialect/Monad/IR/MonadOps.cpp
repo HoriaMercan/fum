@@ -255,7 +255,6 @@ MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorPayloadOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorSwitchOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherLeftOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherBranchOp)
-MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherCatchOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorThrowOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorCatchOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorWidenOp)
@@ -429,94 +428,6 @@ LogicalResult MonadEitherBranchOp::verify() {
 /// branch produces the successor arguments.
 SuccessorOperands MonadEitherBranchOp::getSuccessorOperands(unsigned index) {
   assert(index < 2 && "invalid successor index");
-  unsigned produced =
-      index == 0 ? 1 : getInput().getType().getValueTypes().size();
-  return SuccessorOperands(produced, MutableOperandRange(getOperation(), 0, 0));
-}
-
-//===----------------------------------------------------------------------===//
-// MonadEitherCatchOp
-//===----------------------------------------------------------------------===//
-
-/// Returns the successor of a left.
-Block *MonadEitherCatchOp::getLeft() { return getDests().front(); }
-
-/// Returns the successor of a right, or null if a right ends the enclosing
-/// monad.do.
-Block *MonadEitherCatchOp::getRight() {
-  return getHasRight() && getDests().size() == 2 ? getDests().back() : nullptr;
-}
-
-/// Parses `%m, left ^l (, right ^r)? attr-dict : T`.
-ParseResult MonadEitherCatchOp::parse(OpAsmParser &parser,
-                                      OperationState &result) {
-  OpAsmParser::UnresolvedOperand input;
-  SmallVector<Block *> dests;
-  if (parser.parseOperand(input) || parser.parseComma() ||
-      parser.parseKeyword("left") ||
-      parser.parseSuccessor(dests.emplace_back()))
-    return failure();
-  if (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseKeyword("right") ||
-        parser.parseSuccessor(dests.emplace_back()))
-      return failure();
-    result.addAttribute(getHasRightAttrName(result.name),
-                        parser.getBuilder().getUnitAttr());
-  }
-  Type inputType;
-  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseType(inputType) ||
-      parser.resolveOperand(input, inputType, result.operands))
-    return failure();
-  result.addSuccessors(dests);
-  return success();
-}
-
-/// Prints `%m, left ^l (, right ^r)? attr-dict : T`.
-void MonadEitherCatchOp::print(OpAsmPrinter &printer) {
-  printer << " " << getInput() << ", left ";
-  printer.printSuccessor(getLeft());
-  if (Block *right = getRight()) {
-    printer << ", right ";
-    printer.printSuccessor(right);
-  }
-  printer.printOptionalAttrDict((*this)->getAttrs(), {getHasRightAttrName()});
-  printer << " : " << getInput().getType();
-}
-
-/// Verifies that the left successor takes the left value, that the right
-/// successor takes the value types, and that, without a right successor, the
-/// input is of the result type of the enclosing `monad.do`.
-LogicalResult MonadEitherCatchOp::verify() {
-  size_t expected = getHasRight() ? 2 : 1;
-  if (getDests().size() != expected)
-    return emitOpError() << "expects " << expected << " successors, got "
-                         << getDests().size();
-  EitherType inputType = getInput().getType();
-  if (getLeft()->getArgumentTypes() != TypeRange(inputType.getLeftType()))
-    return emitOpError() << "expects the left successor to take one argument "
-                            "of type "
-                         << inputType.getLeftType();
-  if (Block *right = getRight()) {
-    if (right->getArgumentTypes() != TypeRange(inputType.getValueTypes()))
-      return emitOpError()
-             << "expects the right successor to take arguments of types ("
-             << inputType.getValueTypes() << ")";
-    return success();
-  }
-  Type doType = getParentOp().getType();
-  if (inputType != doType)
-    return emitOpError() << "expects the input to be of the result type of "
-                            "the enclosing monad.do without a right "
-                            "successor, "
-                         << doType << ", got " << inputType;
-  return success();
-}
-
-/// Returns the operands passed to a successor: none are forwarded, and the
-/// catch produces the left value or the right values.
-SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
-  assert(index < getDests().size() && "invalid successor index");
   unsigned produced =
       index == 0 ? 1 : getInput().getType().getValueTypes().size();
   return SuccessorOperands(produced, MutableOperandRange(getOperation(), 0, 0));

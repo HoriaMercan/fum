@@ -114,8 +114,8 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
 
     `monad.return` creates a right and `monad.either.left` a left.
     `monad.bind` continues on a right and ends the enclosing `monad.do` with
-    a left. `monad.either.branch` branches on the side, and
-    `monad.either.catch` handles a left inside a `monad.do`.
+    a left. `monad.either.branch` branches on the side, also inside a
+    `monad.do`.
 
     When `L` is an `!monad.error` or an `!monad.error_union`, the type
     describes a computation that may throw: `monad.error.throw` creates an

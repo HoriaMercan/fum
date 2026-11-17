@@ -409,14 +409,12 @@ static void lowerErrorSwitch(MonadErrorSwitchOp switchOp,
   switchOp.erase();
 }
 
-/// Branches on the side of `input`, an either value: a left goes to `left`
-/// with the left value, and a right to `right` with `rightOperands`, or with
-/// the right values if `rightOperands` is not given.
-static void createSideBranch(OpBuilder &builder, Location loc, Value input,
-                             Block *left, Block *right,
-                             std::optional<ValueRange> rightOperands) {
-  EitherType type = cast<EitherType>(input.getType());
-  SmallVector<Value> lowered = unpack(builder, loc, input);
+/// Lowers `monad.either.branch` to a conditional branch.
+static void lowerEitherBranch(MonadEitherBranchOp branch) {
+  OpBuilder builder(branch);
+  Location loc = branch.getLoc();
+  EitherType type = branch.getInput().getType();
+  SmallVector<Value> lowered = unpack(builder, loc, branch.getInput());
   if (type.getErrorUnion()) {
     // A left error union is the tag and the slots; a left error, its slots.
     ThrowingParts parts = splitThrowing(type, lowered);
@@ -424,49 +422,21 @@ static void createSideBranch(OpBuilder &builder, Location loc, Value input,
     if (isa<ErrorUnionType>(type.getLeftType()))
       errorValues.push_back(parts.tag);
     llvm::append_range(errorValues, parts.slots);
-    SmallVector<Value> values =
-        rightOperands
-            ? llvm::to_vector(*rightOperands)
-            : packEach(builder, loc, type.getValueTypes(), parts.values);
     Value isRight =
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, parts.tag,
                               createI32(builder, loc, 0));
     cf::CondBranchOp::create(
-        builder, loc, isRight, right, values, left,
-        pack(builder, loc, type.getLeftType(), errorValues));
-    return;
+        builder, loc, isRight, branch.getRight(),
+        packEach(builder, loc, type.getValueTypes(), parts.values),
+        branch.getLeft(), pack(builder, loc, type.getLeftType(), errorValues));
+  } else {
+    GeneralParts parts = splitGeneral(type, lowered);
+    cf::CondBranchOp::create(
+        builder, loc, parts.isLeft, branch.getLeft(),
+        pack(builder, loc, type.getLeftType(), parts.left), branch.getRight(),
+        packEach(builder, loc, type.getValueTypes(), parts.values));
   }
-  GeneralParts parts = splitGeneral(type, lowered);
-  SmallVector<Value> values =
-      rightOperands
-          ? llvm::to_vector(*rightOperands)
-          : packEach(builder, loc, type.getValueTypes(), parts.values);
-  cf::CondBranchOp::create(builder, loc, parts.isLeft, left,
-                           pack(builder, loc, type.getLeftType(), parts.left),
-                           right, values);
-}
-
-/// Lowers `monad.either.branch` to a conditional branch.
-static void lowerEitherBranch(MonadEitherBranchOp branch) {
-  OpBuilder builder(branch);
-  createSideBranch(builder, branch.getLoc(), branch.getInput(),
-                   branch.getLeft(), branch.getRight(), std::nullopt);
   branch.erase();
-}
-
-/// Lowers `monad.either.catch` in a `monad.do` ending in `exit` to a
-/// conditional branch: a right without a right successor ends the
-/// computation with the input.
-static void lowerEitherCatch(MonadEitherCatchOp catchOp, Block *exit) {
-  OpBuilder builder(catchOp);
-  Value input = catchOp.getInput();
-  if (Block *right = catchOp.getRight())
-    createSideBranch(builder, catchOp.getLoc(), input, catchOp.getLeft(), right,
-                     std::nullopt);
-  else
-    createSideBranch(builder, catchOp.getLoc(), input, catchOp.getLeft(), exit,
-                     ValueRange(input));
-  catchOp.erase();
 }
 
 /// Inlines `doOp` into the enclosing region and lowers the terminators of its
@@ -491,9 +461,6 @@ static void lowerDo(MonadDoOp doOp, const ErrorTags &tags) {
     } else if (MonadErrorCatchOp catchOp =
                    dyn_cast<MonadErrorCatchOp>(terminator)) {
       lowerErrorCatch(catchOp, exit, cast<EitherType>(doType), tags);
-    } else if (MonadEitherCatchOp catchOp =
-                   dyn_cast<MonadEitherCatchOp>(terminator)) {
-      lowerEitherCatch(catchOp, exit);
     }
   }
   exit->getParent()->getBlocks().splice(exit->getIterator(), body.getBlocks());

@@ -235,9 +235,9 @@ func.func @clamp_index(%index: i32, %size: i32) -> !monad.either<!monad.error<@o
   return %result : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
 }
 
-// half_ratio written with the either layer and the error layer: the general
-// catch sends the left to ^left, whose switch recovers div_by_zero and throws
-// the other errors again. It computes the same as @half_ratio.
+// half_ratio written with the either layer and the error layer: the branch
+// sends the left to ^left, whose switch recovers div_by_zero and throws the
+// other errors again. It computes the same as @half_ratio.
 // CHECK-LABEL: func.func @half_ratio_long
 // CHECK: cf.cond_br %{{.+}}, ^[[RIGHT:.+]](%{{.+}} : i32), ^[[LEFT:.+]](%{{.+}} : i32)
 // CHECK: ^[[LEFT]](%[[TAG:.+]]: i32):
@@ -248,7 +248,7 @@ func.func @clamp_index(%index: i32, %size: i32) -> !monad.either<!monad.error<@o
 func.func @half_ratio_long(%a: i32, %b: i32) -> !monad.either<!monad.error<@overflow>, i32> {
   %result = monad.do : !monad.either<!monad.error<@overflow>, i32> {
     %ratio = func.call @safe_div(%a, %b) : (i32, i32) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
-    monad.either.catch %ratio, left ^left, right ^ok : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+    monad.either.branch %ratio, left ^left, right ^ok : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   ^left(%error: !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>):
     monad.error.switch %error [!monad.error<@div_by_zero> -> ^recover, default -> ^other]
         : !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>

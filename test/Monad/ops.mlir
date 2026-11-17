@@ -311,16 +311,15 @@ func.func @error_switch_default(%error: !monad.error_union<{!monad.error<@div_by
   return %two : i32
 }
 
-// The general catch of the either layer, for any left type: with a right
-// successor, and without one, where a right ends the do with the input.
-// CHECK-LABEL: func.func @either_catch
-// CHECK: monad.either.catch %{{.+}}, left ^[[LEFT:.+]], right ^[[RIGHT:.+]] : !monad.either<i32, f32>
+// Branch on the side of an either value inside a do, whatever its left type.
+// CHECK-LABEL: func.func @either_branch_in_do
+// CHECK: monad.do : !monad.maybe<f32>
+// CHECK: monad.either.branch %{{.+}}, left ^[[LEFT:.+]], right ^[[RIGHT:.+]] : !monad.either<i32, f32>
 // CHECK: ^[[LEFT]](%{{.+}}: i32):
 // CHECK: ^[[RIGHT]](%{{.+}}: f32):
-// CHECK: monad.either.catch %{{.+}}, left ^{{.+}} : !monad.either<i32, f32>
-func.func @either_catch(%input: !monad.either<i32, f32>) -> (!monad.maybe<f32>, !monad.either<i32, f32>) {
+func.func @either_branch_in_do(%input: !monad.either<i32, f32>) -> !monad.maybe<f32> {
   %as_maybe = monad.do : !monad.maybe<f32> {
-    monad.either.catch %input, left ^left, right ^right : !monad.either<i32, f32>
+    monad.either.branch %input, left ^left, right ^right : !monad.either<i32, f32>
   ^left(%l: i32):
     %none = monad.maybe.none : !monad.maybe<f32>
     monad.yield %none : !monad.maybe<f32>
@@ -328,14 +327,7 @@ func.func @either_catch(%input: !monad.either<i32, f32>) -> (!monad.maybe<f32>, 
     %some = monad.return %r : !monad.maybe<f32>
     monad.yield %some : !monad.maybe<f32>
   }
-  %recovered = monad.do : !monad.either<i32, f32> {
-    monad.either.catch %input, left ^left : !monad.either<i32, f32>
-  ^left(%l: i32):
-    %converted = arith.sitofp %l : i32 to f32
-    %right = monad.return %converted : !monad.either<i32, f32>
-    monad.yield %right : !monad.either<i32, f32>
-  }
-  return %as_maybe, %recovered : !monad.maybe<f32>, !monad.either<i32, f32>
+  return %as_maybe : !monad.maybe<f32>
 }
 
 // Widening a union to a larger union, and a union of one error to that error.
