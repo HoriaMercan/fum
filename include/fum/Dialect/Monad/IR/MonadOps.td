@@ -144,6 +144,38 @@ def MonadMaybeNoneOp : Monad_Op<"maybe.none", [Pure]> {
 def Monad_AnyErrorType : AnyTypeOf<[MonadErrorType, MonadErrorUnionType],
                                    "error or error union type">;
 
+def MonadErrorDeclareOp : Monad_Op<"error.declare", [
+    SymbolName,
+    SymbolVisibility,
+    Symbol,
+    HasParent<"::mlir::ModuleOp">]> {
+  let summary = "Declares an error and its payload types";
+  let description = [{
+    Declares the error `@name`, which carries one payload value of each listed
+    type. The payload list is omitted when it is empty. The type of the error
+    is `!monad.error<@name, P1, ..., Pn>`.
+
+    The declarations of a module are the registry of its errors. Each error
+    has a positive tag that identifies it once lowered: the explicit `tag` if
+    given, which no other declaration of the module may use, and otherwise
+    the next unused tag in the order of the declarations, starting at 1.
+    Explicit tags keep the tags of separately compiled modules in agreement.
+
+    ```mlir
+    monad.error.declare @div_by_zero
+    monad.error.declare @silenceable(i32) tag 7
+    ```
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       TypeArrayAttr:$payloadTypes,
+                       OptionalAttr<ConfinedAttr<I32Attr, [IntPositive]>>:$tag,
+                       OptionalAttr<StrAttr>:$sym_visibility);
+  let assemblyFormat = [{
+    $sym_name `` custom<PayloadTypes>($payloadTypes) (`tag` $tag^)? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def MonadErrorMakeOp : Monad_Op<"error.make", [
     Pure,
     RangedTypesMatchWith<"payload types match the payload types of the error",
@@ -155,8 +187,8 @@ def MonadErrorMakeOp : Monad_Op<"error.make", [
     value of each payload type of the error.
 
     ```mlir
-    %e = monad.error.make : !monad.error<"div_by_zero">
-    %s = monad.error.make %id : !monad.error<"silenceable", i32>
+    %e = monad.error.make : !monad.error<@div_by_zero>
+    %s = monad.error.make %id : !monad.error<@silenceable, i32>
     ```
   }];
   let arguments = (ins Variadic<AnyType>:$payload);
@@ -175,7 +207,7 @@ def MonadErrorPayloadOp : Monad_Op<"error.payload", [
     of the error.
 
     ```mlir
-    %id = monad.error.payload %s : !monad.error<"silenceable", i32>
+    %id = monad.error.payload %s : !monad.error<@silenceable, i32>
     ```
   }];
   let arguments = (ins MonadErrorType:$error);
@@ -195,8 +227,8 @@ def MonadThrowOp : Monad_Op<"throw", [Pure]> {
     of the result type.
 
     ```mlir
-    %f = monad.throw %e : !monad.error<"div_by_zero">
-        -> !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">}>
+    %f = monad.throw %e : !monad.error<@div_by_zero>
+        -> !monad.value_or_error<[i32] throws {!monad.error<@div_by_zero>}>
     ```
   }];
   let arguments = (ins Monad_AnyErrorType:$error);
@@ -217,9 +249,9 @@ def MonadWidenOp : Monad_Op<"widen", [
 
     ```mlir
     %w = monad.widen %m
-        : !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">}>
-        to !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">,
-                                               !monad.error<"overflow">}>
+        : !monad.value_or_error<[i32] throws {!monad.error<@div_by_zero>}>
+        to !monad.value_or_error<[i32] throws {!monad.error<@div_by_zero>,
+                                               !monad.error<@overflow>}>
     ```
   }];
   let arguments = (ins MonadValueOrErrorType:$input);
@@ -253,13 +285,13 @@ def MonadCatchOp : Monad_Op<"catch", [
     operands. The same block may be the successor of several cases.
 
     ```mlir
-    monad.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover,
+    monad.catch %m, ^ok [!monad.error<@div_by_zero> -> ^recover,
                          default -> ^rest]
-        : !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">,
-                                              !monad.error<"overflow">}>
+        : !monad.value_or_error<[i32] throws {!monad.error<@div_by_zero>,
+                                              !monad.error<@overflow>}>
     ^ok(%value: i32):
-    ^recover(%e: !monad.error<"div_by_zero">):
-    ^rest(%r: !monad.error_union<{!monad.error<"overflow">}>):
+    ^recover(%e: !monad.error<@div_by_zero>):
+    ^rest(%r: !monad.error_union<{!monad.error<@overflow>}>):
     ```
   }];
   let arguments = (ins

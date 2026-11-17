@@ -41,22 +41,28 @@ def MonadMaybeType : Monad_Type<"Maybe", "maybe", [MonadTypeInterface]> {
 def MonadErrorType : Monad_Type<"Error", "error"> {
   let summary = "Error type";
   let description = [{
-    A value of type `!monad.error<"name", P1, ..., Pn>` is the error named
-    `name` carrying a payload of one value of each type `P1`, ..., `Pn`. The
-    name identifies the error: within a set of errors, two errors with the
-    same name are the same error. Without a payload, the type has exactly one
-    value.
+    A value of type `!monad.error<@name, P1, ..., Pn>` is the error `@name`
+    carrying a payload of one value of each type `P1`, ..., `Pn`. Without a
+    payload, the type has exactly one value. The error is declared by
+    `monad.error.declare @name(P1, ..., Pn)` in the enclosing module: the
+    operations that use the type check that the declaration exists and has
+    the same payload types, as `func.call` checks the signature of its
+    callee.
 
     ```mlir
-    !monad.error<"div_by_zero">
-    !monad.error<"silenceable", i32>
+    !monad.error<@div_by_zero>
+    !monad.error<@silenceable, i32>
     ```
   }];
   let parameters = (ins
-      StringRefParameter<"error name">:$name,
+      "::mlir::FlatSymbolRefAttr":$symbol,
       OptionalArrayRefParameter<"::mlir::Type", "payload types">:$payload);
-  let assemblyFormat = "`<` $name (`,` $payload^)? `>`";
+  let assemblyFormat = "`<` $symbol (`,` $payload^)? `>`";
   let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    /// Returns the name of the error, the name of its declaration.
+    ::llvm::StringRef getName() const { return getSymbol().getValue(); }
+  }];
 }
 
 def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
@@ -68,7 +74,7 @@ def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
     them in any order.
 
     ```mlir
-    !monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>
+    !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
     ```
   }];
   let parameters = (ins
@@ -95,8 +101,8 @@ def MonadValueOrErrorType : Monad_Type<"ValueOrError", "value_or_error",
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.
-    !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">,
-                                        !monad.error<"overflow">}>
+    !monad.value_or_error<[i32] throws {!monad.error<@div_by_zero>,
+                                        !monad.error<@overflow>}>
     ```
   }];
   let parameters = (ins

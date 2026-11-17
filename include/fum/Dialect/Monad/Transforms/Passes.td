@@ -21,13 +21,14 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
     - `!monad.maybe<T...>` becomes `i1` (true for `some`) and `T...`;
     - `!monad.value_or_error<[T...] throws {E...}>` becomes an `i32` tag,
       `T...`, and the payload slots of each error `E` in order;
-    - `!monad.error<"name", P...>` becomes `P...`;
+    - `!monad.error<@name, P...>` becomes `P...`;
     - `!monad.error_union<{E...}>` becomes an `i32` tag and the payload slots
       of each error `E` in order.
 
-    The tag of a success is 0, and the tag of an error is the FNV-1a 32-bit
-    hash of its name with the sign bit cleared. The pass fails if two errors
-    of the module have the same tag. Unused slots hold `ub.poison`. Value and
+    The tag of a success is 0, and the tag of an error is the tag of its
+    declaration in the module, as `monad.error.declare` describes. The pass
+    fails if the module uses an error without a declaration with the same
+    payload types. Unused slots hold `ub.poison`. Value and
     payload types that are themselves types of the monad dialect are not
     supported.
   }];

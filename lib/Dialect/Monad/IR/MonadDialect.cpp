@@ -19,7 +19,7 @@ using namespace mlir::monad;
 
 namespace {
 /// Gives error types short aliases in the printed IR, such as
-/// `!error_div_by_zero = !monad.error<"div_by_zero">`.
+/// `!error_div_by_zero = !monad.error<@div_by_zero>`.
 struct MonadOpAsmDialectInterface : public OpAsmDialectInterface {
   using OpAsmDialectInterface::OpAsmDialectInterface;
 

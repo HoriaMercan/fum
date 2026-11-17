@@ -43,16 +43,9 @@ namespace monad {
 using namespace mlir;
 using namespace mlir::monad;
 
-/// Returns the tag of the error with the given name: the FNV-1a 32-bit hash of
-/// the name with the sign bit cleared.
-static int32_t getErrorTag(StringRef name) {
-  uint32_t hash = 2166136261u;
-  for (char character : name) {
-    hash ^= static_cast<unsigned char>(character);
-    hash *= 16777619u;
-  }
-  return static_cast<int32_t>(hash & 0x7fffffffu);
-}
+/// The tags of the errors of the module, by error name, from their
+/// declarations; the tag 0 is a success.
+using ErrorTags = llvm::DenseMap<StringAttr, int32_t>;
 
 /// Returns the types of the payload slots of the given errors, in order.
 static SmallVector<Type> getPayloadSlotTypes(ArrayRef<ErrorType> errors) {
@@ -199,9 +192,10 @@ private:
 class MonadExpander {
 public:
   /// Creates an expander that unpacks values into the components given by
-  /// `converter`.
-  MonadExpander(MLIRContext *context, const TypeConverter &converter)
-      : rewriter(context), converter(converter) {}
+  /// `converter` and gives errors the tags `tags`.
+  MonadExpander(MLIRContext *context, const TypeConverter &converter,
+                const ErrorTags &tags)
+      : rewriter(context), converter(converter), tags(tags) {}
 
   /// Inlines every `monad.do` of `module`, outermost first, and then expands
   /// the remaining monad operations.
@@ -223,6 +217,11 @@ public:
   }
 
 private:
+  /// Returns the tag of `error`.
+  int32_t getErrorTag(ErrorType error) const {
+    return tags.at(error.getSymbol().getAttr());
+  }
+
   /// Returns a constant integer of the given width.
   Value getConstant(Location loc, int64_t value, unsigned width) {
     return arith::ConstantOp::create(
@@ -387,7 +386,7 @@ private:
         error = pack(loc, unionType, unionComponents);
       }
       for (ErrorType errorType : errors) {
-        caseValues.push_back(getErrorTag(errorType.getName()));
+        caseValues.push_back(getErrorTag(errorType));
         caseDests.push_back(handler);
         caseOperands.push_back({error});
       }
@@ -459,7 +458,7 @@ private:
       SmallVector<ErrorType> errors;
       ValueRange slots = components;
       if (auto errorType = dyn_cast<ErrorType>(throwOp.getError().getType())) {
-        tag = getConstant(loc, getErrorTag(errorType.getName()), 32);
+        tag = getConstant(loc, getErrorTag(errorType), 32);
         errors.push_back(errorType);
       } else {
         auto unionType = cast<ErrorUnionType>(throwOp.getError().getType());
@@ -489,6 +488,8 @@ private:
   IRRewriter rewriter;
   /// The converter that gives the components of monadic types.
   const TypeConverter &converter;
+  /// The tags of the errors of the module.
+  const ErrorTags &tags;
 };
 
 /// Lowers the monad dialect to cf, arith and ub.
@@ -503,7 +504,8 @@ struct ConvertMonadToCFPass
       return signalPassFailure();
 
     MonadTypeConverter converter(context);
-    MonadExpander(context, converter).run(module);
+    ErrorTags tags = getErrorTags(module);
+    MonadExpander(context, converter, tags).run(module);
 
     RewritePatternSet patterns(context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
@@ -517,6 +519,7 @@ struct ConvertMonadToCFPass
     ConversionTarget target(*context);
     target.addLegalOp<UnrealizedConversionCastOp>();
     target.addIllegalDialect<MonadDialect>();
+    target.addLegalOp<MonadErrorDeclareOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp funcOp) {
       return converter.isSignatureLegal(funcOp.getFunctionType());
     });
@@ -529,12 +532,17 @@ struct ConvertMonadToCFPass
     module.walk(
         [&](UnrealizedConversionCastOp cast) { casts.push_back(cast); });
     reconcileUnrealizedCasts(casts);
+    for (MonadErrorDeclareOp declaration :
+         llvm::make_early_inc_range(module.getOps<MonadErrorDeclareOp>()))
+      declaration.erase();
   }
 
-  /// Rejects monadic value and payload types, and errors of the module whose
-  /// names have the same tag.
+  /// Rejects monadic value and payload types, and errors without a
+  /// declaration with the same payload types. The operations of the monad
+  /// dialect verify the errors they use; this also covers other operations,
+  /// such as functions, and block arguments.
   LogicalResult checkTypes(ModuleOp module) {
-    llvm::DenseMap<int32_t, StringRef> names;
+    SymbolTable symbolTable(module);
     WalkResult result = module.walk([&](Operation *op) -> WalkResult {
       LogicalResult status = success();
       auto checkType = [&](Type type) {
@@ -545,13 +553,15 @@ struct ConvertMonadToCFPass
           llvm::append_range(components, valueOrErrorType.getValueTypes());
         if (auto errorType = dyn_cast<ErrorType>(type)) {
           llvm::append_range(components, errorType.getPayload());
-          int32_t tag = getErrorTag(errorType.getName());
-          auto [it, inserted] = names.try_emplace(tag, errorType.getName());
-          if (tag == 0 || (!inserted && it->second != errorType.getName()))
+          MonadErrorDeclareOp declaration =
+              symbolTable.lookup<MonadErrorDeclareOp>(errorType.getName());
+          if (!declaration ||
+              TypeRange(errorType.getPayload()) !=
+                  TypeRange(llvm::to_vector(declaration.getPayloadTypes()
+                                                .getAsValueRange<TypeAttr>())))
             status = op->emitOpError()
-                     << "uses error \"" << errorType.getName()
-                     << "\", whose tag " << tag
-                     << " is the tag of a success or of another error";
+                     << "uses " << errorType << ", which no error of the "
+                     << "module declares with these payload types";
         }
         if (llvm::any_of(components, [](Type component) {
               return isa<MonadDialect>(component.getDialect());

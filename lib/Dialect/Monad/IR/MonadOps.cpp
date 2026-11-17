@@ -11,14 +11,140 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
 using namespace mlir::monad;
 
+/// Parses an optional parenthesized, non-empty list of payload types.
+static ParseResult parsePayloadTypes(OpAsmParser &parser,
+                                     ArrayAttr &payloadTypes) {
+  SmallVector<Attribute> types;
+  if (succeeded(parser.parseOptionalLParen())) {
+    if (parser.parseCommaSeparatedList([&]() -> ParseResult {
+          Type type;
+          if (parser.parseType(type))
+            return failure();
+          types.push_back(TypeAttr::get(type));
+          return success();
+        }) ||
+        parser.parseRParen())
+      return failure();
+  }
+  payloadTypes = parser.getBuilder().getArrayAttr(types);
+  return success();
+}
+
+/// Prints the payload types in parentheses, or nothing if there are none.
+static void printPayloadTypes(OpAsmPrinter &printer, Operation *,
+                              ArrayAttr payloadTypes) {
+  if (payloadTypes.empty())
+    return;
+  printer << "(";
+  llvm::interleaveComma(payloadTypes.getAsValueRange<TypeAttr>(), printer);
+  printer << ")";
+}
+
 #define GET_OP_CLASSES
 #include "fum/Dialect/Monad/IR/MonadOps.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// Error declarations
+//===----------------------------------------------------------------------===//
+
+/// Verifies that no earlier declaration of the module uses the explicit tag of
+/// this declaration.
+LogicalResult MonadErrorDeclareOp::verify() {
+  std::optional<uint32_t> tag = getTag();
+  if (!tag)
+    return success();
+  for (Operation &op : *getOperation()->getBlock()) {
+    if (&op == getOperation())
+      break;
+    MonadErrorDeclareOp other = dyn_cast<MonadErrorDeclareOp>(op);
+    if (other && other.getTag() == tag)
+      return emitOpError() << "expects a tag that no other error uses, got "
+                           << *tag << ", the tag of " << other.getSymNameAttr();
+  }
+  return success();
+}
+
+/// Returns the tag of every error declared in `module`, by error name: the
+/// explicit tag of the declaration, or otherwise the next tag that no
+/// explicit tag uses, in the order of the declarations, starting at 1.
+llvm::DenseMap<StringAttr, int32_t> mlir::monad::getErrorTags(ModuleOp module) {
+  llvm::DenseSet<int32_t> explicitTags;
+  for (MonadErrorDeclareOp declaration : module.getOps<MonadErrorDeclareOp>())
+    if (std::optional<uint32_t> tag = declaration.getTag())
+      explicitTags.insert(*tag);
+  llvm::DenseMap<StringAttr, int32_t> tags;
+  int32_t next = 1;
+  for (MonadErrorDeclareOp declaration : module.getOps<MonadErrorDeclareOp>()) {
+    if (std::optional<uint32_t> tag = declaration.getTag()) {
+      tags[declaration.getSymNameAttr()] = *tag;
+      continue;
+    }
+    while (explicitTags.contains(next))
+      ++next;
+    tags[declaration.getSymNameAttr()] = next++;
+  }
+  return tags;
+}
+
+/// Verifies every error type that `op` uses, in its operand and result types
+/// and in its type attributes, against its declaration: the declaration must
+/// exist and have the payload types of the error type.
+static LogicalResult verifyErrorSymbols(Operation *op,
+                                        SymbolTableCollection &symbolTable) {
+  LogicalResult result = success();
+  auto verifyError = [&](ErrorType error) {
+    if (failed(result))
+      return;
+    MonadErrorDeclareOp declaration =
+        symbolTable.lookupNearestSymbolFrom<MonadErrorDeclareOp>(
+            op, error.getSymbol());
+    if (!declaration) {
+      result = op->emitOpError() << "expects " << error.getSymbol()
+                                 << " to reference a declared error";
+      return;
+    }
+    if (TypeRange(error.getPayload()) !=
+        TypeRange(llvm::to_vector(
+            declaration.getPayloadTypes().getAsValueRange<TypeAttr>())))
+      result = op->emitOpError()
+               << "expects the payload types of " << error
+               << " to be the payload types declared by " << error.getSymbol();
+  };
+  for (Type type : op->getOperandTypes())
+    type.walk(verifyError);
+  for (Type type : op->getResultTypes())
+    type.walk(verifyError);
+  op->getAttrDictionary().walk(verifyError);
+  return result;
+}
+
+/// Defines `verifySymbolUses` of the operation `OpClass` as the verification
+/// of the error types it uses.
+#define MONAD_VERIFY_ERROR_SYMBOLS(OpClass)                                    \
+  LogicalResult OpClass::verifySymbolUses(                                     \
+      SymbolTableCollection &symbolTable) {                                    \
+    return verifyErrorSymbols(getOperation(), symbolTable);                    \
+  }
+MONAD_VERIFY_ERROR_SYMBOLS(MonadReturnOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadDoOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadBindOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadYieldOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadMaybeNoneOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorDeclareOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorMakeOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorPayloadOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadThrowOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadWidenOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadCatchOp)
+#undef MONAD_VERIFY_ERROR_SYMBOLS
 
 //===----------------------------------------------------------------------===//
 // MonadDoOp

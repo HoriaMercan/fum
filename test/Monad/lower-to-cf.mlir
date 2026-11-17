@@ -5,13 +5,18 @@
 // can execute @main, which returns 0 when every check passes and otherwise
 // the number of the first failing check.
 //
-// Tags: div_by_zero 1855107791, overflow 425502571, definite 418492385,
-// silenceable 2016990996.
+// Tags: silenceable has the explicit tag 1, so the others take the next
+// unused tags in declaration order: div_by_zero 2, overflow 3, definite 4.
 
-!div_by_zero = !monad.error<"div_by_zero">
-!overflow = !monad.error<"overflow">
-!definite = !monad.error<"definite">
-!silenceable = !monad.error<"silenceable", i32>
+monad.error.declare @div_by_zero
+monad.error.declare @overflow
+monad.error.declare @definite
+monad.error.declare @silenceable(i32) tag 1
+
+!div_by_zero = !monad.error<@div_by_zero>
+!overflow = !monad.error<@overflow>
+!definite = !monad.error<@definite>
+!silenceable = !monad.error<@silenceable, i32>
 !check = !monad.value_or_error<[] throws {!div_by_zero, !overflow}>
 !quotient = !monad.value_or_error<[i32] throws {!div_by_zero, !overflow}>
 !half = !monad.value_or_error<[i32] throws {!overflow}>
@@ -22,11 +27,11 @@
 // A failed check ends the do with its tag; the quotient slot is poison.
 // CHECK-LABEL: func.func @safe_div
 // CHECK-SAME: -> (i32, i32)
-// CHECK: %[[DIV_TAG:.+]] = arith.constant 1855107791 : i32
+// CHECK: %[[DIV_TAG:.+]] = arith.constant 2 : i32
 // CHECK: %[[CHECK:.+]] = arith.select %{{.*}}, %[[DIV_TAG]], %{{.*}} : i32
 // CHECK: %[[FAILED:.+]] = arith.cmpi ne, %[[CHECK]], %{{.*}} : i32
 // CHECK: cf.cond_br %[[FAILED]], ^[[EXIT:.+]](%[[CHECK]], %{{.*}} : i32, i32), ^{{.*}}
-// CHECK: arith.constant 425502571 : i32
+// CHECK: arith.constant 3 : i32
 // CHECK: cf.cond_br %{{.*}}, ^[[EXIT]](%{{.*}}, %{{.*}} : i32, i32), ^{{.*}}
 // CHECK: arith.divsi
 // CHECK: cf.br ^[[EXIT]](%{{.*}}, %{{.*}} : i32, i32)
@@ -66,7 +71,7 @@ func.func @safe_div(%a: i32, %b: i32) -> !quotient {
 // CHECK: cf.switch %[[QUOTIENT]]#0 : i32, [
 // CHECK-NEXT: default: ^[[EXIT:.+]](%[[QUOTIENT]]#0, %{{.*}} : i32, i32),
 // CHECK-NEXT: 0: ^[[OK:.+]](%[[QUOTIENT]]#1 : i32),
-// CHECK-NEXT: 1855107791: ^[[RECOVER:[a-z0-9_]+]]
+// CHECK-NEXT: 2: ^[[RECOVER:[a-z0-9_]+]]
 // CHECK-NEXT: ]
 // CHECK: ^[[OK]](%{{.*}}: i32):
 // CHECK: cf.br ^[[EXIT]]
@@ -158,7 +163,7 @@ func.func @fuse_into_containing_op(%producer: i32, %loop: i32) -> !fusion {
 // CHECK: cf.switch %[[TILE]]#0 : i32, [
 // CHECK-NEXT: default: ^[[UNREACHABLE:.+]],
 // CHECK-NEXT: 0: ^{{.*}}(%[[TILE]]#1, %[[TILE]]#2 : i32, i32),
-// CHECK-NEXT: 2016990996: ^{{.*}}(%[[TILE]]#3 : i32)
+// CHECK-NEXT: 1: ^{{.*}}(%[[TILE]]#3 : i32)
 // CHECK: call @report_suppressed
 // CHECK: ^[[UNREACHABLE]]:
 // CHECK-NEXT: ub.unreachable
@@ -168,7 +173,7 @@ func.func @fuse_into_containing_op(%producer: i32, %loop: i32) -> !fusion {
 // CHECK: cf.switch %[[FUSE]]#0 : i32, [
 // CHECK-NEXT: default: ^{{.*}}(%[[FUSE]]#0, %{{.*}}, %{{.*}} : i32, i32, i32),
 // CHECK-NEXT: 0: ^{{.*}}(%[[FUSE]]#1, %[[FUSE]]#2 : i32, i32),
-// CHECK-NEXT: 2016990996: ^{{.*}}(%[[FUSE]]#3 : i32)
+// CHECK-NEXT: 1: ^{{.*}}(%[[FUSE]]#3 : i32)
 // CHECK: call @report_suppressed
 func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !sequence {
   %result = monad.do : !sequence {
@@ -209,9 +214,9 @@ func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !sequence {
 // CHECK-LABEL: func.func @main
 func.func @main() -> i32 {
   %success = arith.constant 0 : i32
-  %div_by_zero_tag = arith.constant 1855107791 : i32
-  %overflow_tag = arith.constant 425502571 : i32
-  %definite_tag = arith.constant 418492385 : i32
+  %div_by_zero_tag = arith.constant 2 : i32
+  %overflow_tag = arith.constant 3 : i32
+  %definite_tag = arith.constant 4 : i32
   %min = arith.constant -2147483648 : i32
   %minus_one = arith.constant -1 : i32
   %c0 = arith.constant 0 : i32
