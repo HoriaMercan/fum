@@ -20,7 +20,7 @@ using namespace mlir;
 using namespace mlir::monad;
 
 //===----------------------------------------------------------------------===//
-// Cases of monad.either.catch and monad.error_union.switch
+// Cases of monad.error.catch and monad.error.switch
 //===----------------------------------------------------------------------===//
 
 /// Parses the cases `[CASE -> ^handler, ...]`, appending the handlers to
@@ -113,6 +113,50 @@ static void printPayloadTypes(OpAsmPrinter &printer, Operation *,
   printer << "(";
   llvm::interleaveComma(payloadTypes.getAsValueRange<TypeAttr>(), printer);
   printer << ")";
+}
+
+/// Parses the cases of `monad.error.switch`: `[CASE -> ^handler, ...]`,
+/// optionally ending with `default -> ^handler`.
+static ParseResult parseSwitchCases(OpAsmParser &parser, ArrayAttr &caseTypes,
+                                    UnitAttr &hasDefault,
+                                    SmallVectorImpl<Block *> &handlers) {
+  SmallVector<Type> types;
+  if (parser.parseCommaSeparatedList(
+          OpAsmParser::Delimiter::Square, [&]() -> ParseResult {
+            if (hasDefault)
+              return parser.emitError(parser.getCurrentLocation(),
+                                      "expects the default case to be last");
+            if (succeeded(parser.parseOptionalKeyword("default"))) {
+              hasDefault = parser.getBuilder().getUnitAttr();
+            } else if (parser.parseType(types.emplace_back())) {
+              return failure();
+            }
+            return failure(parser.parseArrow() ||
+                           parser.parseSuccessor(handlers.emplace_back()));
+          }))
+    return failure();
+  caseTypes = parser.getBuilder().getTypeArrayAttr(types);
+  return success();
+}
+
+/// Prints the cases of `monad.error.switch`, with the default case last.
+static void printSwitchCases(OpAsmPrinter &printer, Operation *,
+                             ArrayAttr caseTypes, UnitAttr hasDefault,
+                             SuccessorRange handlers) {
+  printer << "[";
+  llvm::interleaveComma(
+      llvm::zip(caseTypes.getAsValueRange<TypeAttr>(), handlers), printer,
+      [&](auto entry) {
+        printer << std::get<0>(entry) << " -> ";
+        printer.printSuccessor(std::get<1>(entry));
+      });
+  if (hasDefault && handlers.size() == caseTypes.size() + 1) {
+    if (!caseTypes.empty())
+      printer << ", ";
+    printer << "default -> ";
+    printer.printSuccessor(handlers.back());
+  }
+  printer << "]";
 }
 
 #define GET_OP_CLASSES
@@ -209,12 +253,13 @@ MONAD_VERIFY_ERROR_SYMBOLS(MonadMaybeNoneOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorDeclareOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorMakeOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorPayloadOp)
-MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorUnionSwitchOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorSwitchOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherLeftOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherBranchOp)
-MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherThrowOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherCatchOp)
-MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherWidenOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorThrowOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorCatchOp)
+MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorWidenOp)
 #undef MONAD_VERIFY_ERROR_SYMBOLS
 
 //===----------------------------------------------------------------------===//
@@ -284,32 +329,80 @@ LogicalResult MonadYieldOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadErrorUnionSwitchOp
+// MonadErrorSwitchOp
 //===----------------------------------------------------------------------===//
 
-/// Verifies that there is one handler per case and that the cases list every
-/// member of the input exactly once.
-LogicalResult MonadErrorUnionSwitchOp::verify() {
-  if (getHandlers().size() != getCaseTypes().size())
-    return emitOpError() << "expects one handler per case, got "
-                         << getHandlers().size() << " handlers for "
-                         << getCaseTypes().size() << " cases";
-  ErrorUnionType errors = getInput().getType();
+/// Returns the errors of the input: the union, or the union of the error.
+ErrorUnionType MonadErrorSwitchOp::getInputErrors() {
+  Type type = getInput().getType();
+  if (ErrorType error = dyn_cast<ErrorType>(type))
+    return ErrorUnionType::get(getContext(), {error});
+  return cast<ErrorUnionType>(type);
+}
+
+/// Returns the handlers of the cases, in the order of the cases.
+SuccessorRange MonadErrorSwitchOp::getCaseHandlers() {
+  return getHandlers().take_front(getCaseTypes().size());
+}
+
+/// Returns the handler of `default`, or null without `default`.
+Block *MonadErrorSwitchOp::getDefaultHandler() {
+  return getHasDefault() ? getHandlers().back() : nullptr;
+}
+
+/// Returns the errors of the input that no case lists, sorted by name.
+SmallVector<ErrorType> MonadErrorSwitchOp::getUnlistedErrors() {
   llvm::StringSet<> listed;
-  if (failed(verifyCases(*this, errors, errors, getCaseTypes(), getHandlers(),
-                         listed)))
-    return failure();
-  for (ErrorType error : errors.getErrors())
+  for (Type caseType : getCaseTypes().getAsValueRange<TypeAttr>()) {
+    if (ErrorType error = dyn_cast<ErrorType>(caseType))
+      listed.insert(error.getName().getValue());
+    else if (ErrorUnionType group = dyn_cast<ErrorUnionType>(caseType))
+      for (ErrorType error : group.getErrors())
+        listed.insert(error.getName().getValue());
+  }
+  SmallVector<ErrorType> unlisted;
+  for (ErrorType error : getInputErrors().getErrors())
     if (!listed.contains(error.getName().getValue()))
-      return emitOpError() << "expects a case for every member of " << errors
-                           << ", got none for " << error;
+      unlisted.push_back(error);
+  return unlisted;
+}
+
+/// Verifies the cases against the input, and that `default` takes the union
+/// of the errors that no case lists, or that, without `default`, the cases
+/// list every error of the input.
+LogicalResult MonadErrorSwitchOp::verify() {
+  size_t expected = getCaseTypes().size() + (getHasDefault() ? 1 : 0);
+  if (getHandlers().size() != expected)
+    return emitOpError() << "expects one handler per case, got "
+                         << getHandlers().size() << " handlers for " << expected
+                         << " cases";
+  llvm::StringSet<> listed;
+  if (failed(verifyCases(*this, getInput().getType(), getInputErrors(),
+                         getCaseTypes(), getCaseHandlers(), listed)))
+    return failure();
+  SmallVector<ErrorType> unlisted = getUnlistedErrors();
+  Block *defaultHandler = getDefaultHandler();
+  if (!defaultHandler) {
+    if (!unlisted.empty())
+      return emitOpError() << "expects a case for every error of "
+                           << getInput().getType() << ", got none for "
+                           << unlisted.front();
+    return success();
+  }
+  if (unlisted.empty())
+    return emitOpError() << "expects the default case to receive at least one "
+                            "error that no case lists";
+  ErrorUnionType rest = ErrorUnionType::get(getContext(), unlisted);
+  if (defaultHandler->getArgumentTypes() != TypeRange(rest))
+    return emitOpError() << "expects the default handler to take one argument "
+                            "of type "
+                         << rest;
   return success();
 }
 
 /// Returns the operands passed to a handler: none are forwarded, and the
 /// switch produces the error, or the group, of the case.
-SuccessorOperands
-MonadErrorUnionSwitchOp::getSuccessorOperands(unsigned index) {
+SuccessorOperands MonadErrorSwitchOp::getSuccessorOperands(unsigned index) {
   assert(index < getHandlers().size() && "invalid successor index");
   return SuccessorOperands(1, MutableOperandRange(getOperation(), 0, 0));
 }
@@ -343,42 +436,134 @@ SuccessorOperands MonadEitherBranchOp::getSuccessorOperands(unsigned index) {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadEitherThrowOp
+// MonadEitherCatchOp
+//===----------------------------------------------------------------------===//
+
+/// Returns the successor of a left.
+Block *MonadEitherCatchOp::getLeft() { return getDests().front(); }
+
+/// Returns the successor of a right, or null if a right ends the enclosing
+/// monad.do.
+Block *MonadEitherCatchOp::getRight() {
+  return getHasRight() && getDests().size() == 2 ? getDests().back() : nullptr;
+}
+
+/// Parses `%m, left ^l (, right ^r)? attr-dict : T`.
+ParseResult MonadEitherCatchOp::parse(OpAsmParser &parser,
+                                      OperationState &result) {
+  OpAsmParser::UnresolvedOperand input;
+  SmallVector<Block *> dests;
+  if (parser.parseOperand(input) || parser.parseComma() ||
+      parser.parseKeyword("left") ||
+      parser.parseSuccessor(dests.emplace_back()))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseKeyword("right") ||
+        parser.parseSuccessor(dests.emplace_back()))
+      return failure();
+    result.addAttribute(getHasRightAttrName(result.name),
+                        parser.getBuilder().getUnitAttr());
+  }
+  Type inputType;
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
+      parser.parseType(inputType) ||
+      parser.resolveOperand(input, inputType, result.operands))
+    return failure();
+  result.addSuccessors(dests);
+  return success();
+}
+
+/// Prints `%m, left ^l (, right ^r)? attr-dict : T`.
+void MonadEitherCatchOp::print(OpAsmPrinter &printer) {
+  printer << " " << getInput() << ", left ";
+  printer.printSuccessor(getLeft());
+  if (Block *right = getRight()) {
+    printer << ", right ";
+    printer.printSuccessor(right);
+  }
+  printer.printOptionalAttrDict((*this)->getAttrs(), {getHasRightAttrName()});
+  printer << " : " << getInput().getType();
+}
+
+/// Verifies that the left successor takes the left value, that the right
+/// successor takes the value types, and that, without a right successor, the
+/// input is of the result type of the enclosing `monad.do`.
+LogicalResult MonadEitherCatchOp::verify() {
+  size_t expected = getHasRight() ? 2 : 1;
+  if (getDests().size() != expected)
+    return emitOpError() << "expects " << expected << " successors, got "
+                         << getDests().size();
+  EitherType inputType = getInput().getType();
+  if (getLeft()->getArgumentTypes() != TypeRange(inputType.getLeftType()))
+    return emitOpError() << "expects the left successor to take one argument "
+                            "of type "
+                         << inputType.getLeftType();
+  if (Block *right = getRight()) {
+    if (right->getArgumentTypes() != TypeRange(inputType.getValueTypes()))
+      return emitOpError()
+             << "expects the right successor to take arguments of types ("
+             << inputType.getValueTypes() << ")";
+    return success();
+  }
+  Type doType = getParentOp().getType();
+  if (inputType != doType)
+    return emitOpError() << "expects the input to be of the result type of "
+                            "the enclosing monad.do without a right "
+                            "successor, "
+                         << doType << ", got " << inputType;
+  return success();
+}
+
+/// Returns the operands passed to a successor: none are forwarded, and the
+/// catch produces the left value or the right values.
+SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
+  assert(index < getDests().size() && "invalid successor index");
+  unsigned produced =
+      index == 0 ? 1 : getInput().getType().getValueTypes().size();
+  return SuccessorOperands(produced, MutableOperandRange(getOperation(), 0, 0));
+}
+
+//===----------------------------------------------------------------------===//
+// MonadErrorThrowOp
 //===----------------------------------------------------------------------===//
 
 /// Verifies that the error is an error of the left type of the result.
-LogicalResult MonadEitherThrowOp::verify() {
+LogicalResult MonadErrorThrowOp::verify() {
   ErrorUnionType errors = getResult().getType().getErrorUnion();
   if (!errors)
     return emitOpError() << "expects the left type of the result to be an "
                             "error or an error union";
-  if (!errors.contains(getError().getType()))
-    return emitOpError() << "expects " << getError().getType()
-                         << " to be an error of "
+  Type errorType = getError().getType();
+  ErrorUnionType thrown =
+      isa<ErrorType>(errorType)
+          ? ErrorUnionType::get(getContext(), {cast<ErrorType>(errorType)})
+          : cast<ErrorUnionType>(errorType);
+  if (!thrown.isSubsetOf(errors))
+    return emitOpError() << "expects " << errorType << " to be an error of "
                          << getResult().getType().getLeftType();
   return success();
 }
 
 //===----------------------------------------------------------------------===//
-// MonadEitherCatchOp
+// MonadErrorCatchOp
 //===----------------------------------------------------------------------===//
 
 /// Returns the successor of a right, or null if a right ends the enclosing
 /// monad.do.
-Block *MonadEitherCatchOp::getOk() {
+Block *MonadErrorCatchOp::getOk() {
   if (getDests().size() != getCaseTypes().size() + 1)
     return nullptr;
   return getDests().front();
 }
 
 /// Returns the handler successors, one per case.
-SuccessorRange MonadEitherCatchOp::getHandlers() {
+SuccessorRange MonadErrorCatchOp::getHandlers() {
   return getDests().drop_front(getOk() ? 1 : 0);
 }
 
 /// Parses `%m (, ^ok)? [CASE -> ^h, ...] attr-dict : T`.
-ParseResult MonadEitherCatchOp::parse(OpAsmParser &parser,
-                                      OperationState &result) {
+ParseResult MonadErrorCatchOp::parse(OpAsmParser &parser,
+                                     OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
   if (parser.parseOperand(input))
     return failure();
@@ -399,7 +584,7 @@ ParseResult MonadEitherCatchOp::parse(OpAsmParser &parser,
 }
 
 /// Prints `%m (, ^ok)? [CASE -> ^h, ...] attr-dict : T`.
-void MonadEitherCatchOp::print(OpAsmPrinter &printer) {
+void MonadErrorCatchOp::print(OpAsmPrinter &printer) {
   printer << " " << getInput();
   if (Block *ok = getOk()) {
     printer << ", ";
@@ -415,7 +600,7 @@ void MonadEitherCatchOp::print(OpAsmPrinter &printer) {
 /// cases are disjoint errors or error groups of the input, each handler takes
 /// one argument of its case type, `^ok` takes the value types, and every error
 /// that is not caught is a member of the error union of the `monad.do`.
-LogicalResult MonadEitherCatchOp::verify() {
+LogicalResult MonadErrorCatchOp::verify() {
   size_t caseCount = getCaseTypes().size();
   if (getDests().size() != caseCount && getDests().size() != caseCount + 1)
     return emitOpError() << "expects one successor per case, and optionally "
@@ -463,7 +648,7 @@ LogicalResult MonadEitherCatchOp::verify() {
 /// Returns the operands passed to a successor: none are forwarded, and the
 /// catch produces the values of a right for `^ok` and the error for a
 /// handler.
-SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
+SuccessorOperands MonadErrorCatchOp::getSuccessorOperands(unsigned index) {
   assert(index < getDests().size() && "invalid successor index");
   unsigned produced =
       (index == 0 && getOk()) ? getInput().getType().getValueTypes().size() : 1;
@@ -471,14 +656,13 @@ SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadEitherWidenOp
+// MonadErrorWidenOp
 //===----------------------------------------------------------------------===//
 
 /// Returns whether the input and the result are either types with the same
 /// value types whose left types are error unions, the first a subset of the
 /// second.
-bool MonadEitherWidenOp::areCastCompatible(TypeRange inputs,
-                                           TypeRange outputs) {
+bool MonadErrorWidenOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   if (inputs.size() != 1 || outputs.size() != 1)
     return false;
   EitherType input = dyn_cast<EitherType>(inputs.front());

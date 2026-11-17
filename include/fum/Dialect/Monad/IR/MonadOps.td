@@ -207,33 +207,49 @@ def MonadErrorPayloadOp : Monad_Op<"error.payload", [
   let assemblyFormat = "$error attr-dict `:` qualified(type($error))";
 }
 
-def MonadErrorUnionSwitchOp : Monad_Op<"error_union.switch", [
+def MonadErrorSwitchOp : Monad_Op<"error.switch", [
     Terminator,
     DeclareOpInterfaceMethods<BranchOpInterface>]> {
-  let summary = "Branches on the member of an error union";
+  let summary = "Branches on the error held by an error or an error union";
   let description = [{
     Branches to the handler of the case that lists the error held by the
-    input. A case is an error type, or an error union for a group of errors;
-    its handler takes one argument of the case type. The cases are disjoint,
-    and together they list every member of the union. The successor arguments
-    are produced by the switch, which forwards no operands.
+    input, an error or an error union; a single error behaves as the union
+    of that error. A case is an error type, or an error union for a group of
+    errors; its handler takes one argument of the case type. The cases are
+    disjoint. The optional `default` case, which comes last, takes the error
+    union of the errors that no case lists, and requires at least one such
+    error. Without `default`, the cases list every error of the input. The
+    successor arguments are produced by the switch, which forwards no
+    operands.
 
     ```mlir
-    monad.error_union.switch %e [!monad.error<@div_by_zero> -> ^division,
-                                 !monad.error<@overflow> -> ^overflow]
+    monad.error.switch %e [!monad.error<@div_by_zero> -> ^division,
+                           default -> ^other]
         : !monad.error_union<{!monad.error<@div_by_zero>,
                               !monad.error<@overflow>}>
     ^division(%d: !monad.error<@div_by_zero>):
-    ^overflow(%o: !monad.error<@overflow>):
+    ^other(%o: !monad.error_union<{!monad.error<@overflow>}>):
     ```
   }];
-  let arguments = (ins MonadErrorUnionType:$input, TypeArrayAttr:$caseTypes);
+  let arguments = (ins AnyTypeOf<[MonadErrorType, MonadErrorUnionType]>:$input,
+                       TypeArrayAttr:$caseTypes,
+                       UnitAttr:$hasDefault);
   let successors = (successor VariadicSuccessor<AnySuccessor>:$handlers);
   let assemblyFormat = [{
-    $input custom<Cases>($caseTypes, $handlers) attr-dict `:`
-    qualified(type($input))
+    $input custom<SwitchCases>($caseTypes, $hasDefault, $handlers) attr-dict
+    `:` qualified(type($input))
   }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// Returns the errors of the input: the union, or the union of the error.
+    ErrorUnionType getInputErrors();
+    /// Returns the handlers of the cases, in the order of the cases.
+    ::mlir::SuccessorRange getCaseHandlers();
+    /// Returns the handler of `default`, or null without `default`.
+    ::mlir::Block *getDefaultHandler();
+    /// Returns the errors of the input that no case lists, sorted by name.
+    ::llvm::SmallVector<ErrorType> getUnlistedErrors();
+  }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -283,22 +299,60 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
   let hasVerifier = 1;
 }
 
+def MonadEitherCatchOp : Monad_Op<"either.catch", [
+    Terminator,
+    HasParent<"MonadDoOp">,
+    DeclareOpInterfaceMethods<BranchOpInterface>]> {
+  let summary = "Handles the left of an either value";
+  let description = [{
+    Continues the enclosing `monad.do` depending on the side of the input,
+    as Haskell's `catchError` does for `Either`:
+
+    - a left branches to `left` with the left value, whatever its type;
+    - a right branches to `right` with its values; without `right`, the
+      `monad.do` ends with the input, whose type must then be the result
+      type of the `monad.do`.
+
+    The successor arguments are produced by the catch, which forwards no
+    operands. `monad.error.catch` is the same with the left dispatched on
+    its errors.
+
+    ```mlir
+    monad.either.catch %m, left ^handler, right ^ok : !monad.either<i32, f32>
+    ^handler(%l: i32):
+    ^ok(%r: f32):
+    ```
+  }];
+  let arguments = (ins MonadEitherType:$input, UnitAttr:$hasRight);
+  let successors = (successor VariadicSuccessor<AnySuccessor>:$dests);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// Returns the successor of a left.
+    ::mlir::Block *getLeft();
+    /// Returns the successor of a right, or null if a right ends the
+    /// enclosing monad.do.
+    ::mlir::Block *getRight();
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Exception operations: either whose left type is an error or an error union
 //===----------------------------------------------------------------------===//
 
-def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
+def MonadErrorThrowOp : Monad_Op<"error.throw", [Pure]> {
   let summary = "Creates an either value that holds an error";
   let description = [{
-    Creates the left either value holding the error `error`. The left type
-    of the result is that error, or an error union of which it is a member.
+    Creates the left either value holding the error `error`, an error or an
+    error union; a union throws the error it holds again. Every error of
+    `error` must be an error of the left type of the result.
 
     ```mlir
-    %m = monad.either.throw %e : !monad.error<@overflow>
+    %m = monad.error.throw %e : !monad.error<@overflow>
         -> !monad.either<!monad.error<@overflow>, i32>
     ```
   }];
-  let arguments = (ins MonadErrorType:$error);
+  let arguments = (ins AnyTypeOf<[MonadErrorType, MonadErrorUnionType]>:$error);
   let results = (outs MonadEitherType:$result);
   let assemblyFormat = [{
     $error attr-dict `:` qualified(type($error)) `->` qualified(type($result))
@@ -306,7 +360,7 @@ def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
   let hasVerifier = 1;
 }
 
-def MonadEitherCatchOp : Monad_Op<"either.catch", [
+def MonadErrorCatchOp : Monad_Op<"error.catch", [
     Terminator,
     HasParent<"MonadDoOp">,
     DeclareOpInterfaceMethods<BranchOpInterface>]> {
@@ -330,7 +384,7 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
     forwards no operands.
 
     ```mlir
-    monad.either.catch %m, ^ok [!monad.error<@div_by_zero> -> ^recover]
+    monad.error.catch %m, ^ok [!monad.error<@div_by_zero> -> ^recover]
         : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>,
                                             !monad.error<@overflow>}>, i32>
     ^ok(%x: i32):
@@ -350,7 +404,7 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
   }];
 }
 
-def MonadEitherWidenOp : Monad_Op<"either.widen", [
+def MonadErrorWidenOp : Monad_Op<"error.widen", [
     Pure,
     DeclareOpInterfaceMethods<CastOpInterface>]> {
   let summary = "Widens the errors of an either value";
@@ -360,7 +414,7 @@ def MonadEitherWidenOp : Monad_Op<"either.widen", [
     of the input must be errors of the left type of the result.
 
     ```mlir
-    %w = monad.either.widen %m
+    %w = monad.error.widen %m
         : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
         to !monad.either<!monad.error_union<{!monad.error<@a>,
                                              !monad.error<@b>}>, i32>

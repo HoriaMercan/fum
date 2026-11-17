@@ -77,7 +77,7 @@ def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
     distinct, and they are stored sorted by name. The parser and the builder
     accept them in any order.
 
-    A union is not a monad. `monad.error_union.switch` branches on its
+    A union is not a monad. `monad.error.switch` branches on its
     member.
 
     ```mlir
@@ -114,11 +114,12 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
 
     `monad.return` creates a right and `monad.either.left` a left.
     `monad.bind` continues on a right and ends the enclosing `monad.do` with
-    a left. `monad.either.branch` branches on the side.
+    a left. `monad.either.branch` branches on the side, and
+    `monad.either.catch` handles a left inside a `monad.do`.
 
     When `L` is an `!monad.error` or an `!monad.error_union`, the type
-    describes a computation that may throw: `monad.either.throw`,
-    `monad.either.catch`, and `monad.either.widen` apply. A single error
+    describes a computation that may throw: `monad.error.throw`,
+    `monad.error.catch`, and `monad.error.widen` apply. A single error
     behaves as the union of that error.
 
     ```mlir

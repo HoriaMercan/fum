@@ -12,11 +12,11 @@ monad.error.declare @definite
 // CHECK-LABEL: func.func @tile_and_fuse
 // CHECK: monad.do : !monad.either<!error_definite, !transform.any_op, !transform.any_op>
 // CHECK: monad.do : !monad.either<!error_definite, !transform.any_op, !transform.any_op>
-// CHECK: monad.either.catch %{{.+}}, ^[[TILED:.+]] [!error_silenceable -> ^[[SUPPRESSED:.+]]] : !monad.either<!error_silenceable, !transform.any_op, !transform.any_op>
+// CHECK: monad.error.catch %{{.+}}, ^[[TILED:.+]] [!error_silenceable -> ^[[SUPPRESSED:.+]]] : !monad.either<!error_silenceable, !transform.any_op, !transform.any_op>
 // CHECK: ^[[TILED]](%{{.+}}: !transform.any_op, %{{.+}}: !transform.any_op):
 // CHECK: ^[[SUPPRESSED]](%{{.+}}: !error_silenceable):
 // CHECK: monad.bind
-// CHECK: monad.either.catch %{{.+}}, ^{{.+}} [!error_silenceable -> ^{{.+}}] : !monad.either<!errors_definite_silenceable, !transform.any_op, !transform.any_op>
+// CHECK: monad.error.catch %{{.+}}, ^{{.+}} [!error_silenceable -> ^{{.+}}] : !monad.either<!errors_definite_silenceable, !transform.any_op, !transform.any_op>
 
 // The handles stay as they are in the value slots of the lowered values.
 // LOWERED-LABEL: func.func @tile_and_fuse
@@ -50,7 +50,7 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
           -> !monad.either<!monad.error<@silenceable>,
                            !transform.any_op, !transform.any_op>
       // Success goes to ^tiled; the silenceable failure is suppressed in ^tiling_suppressed.
-      monad.either.catch %tiling, ^tiled [!monad.error<@silenceable> -> ^tiling_suppressed]
+      monad.error.catch %tiling, ^tiled [!monad.error<@silenceable> -> ^tiling_suppressed]
           : !monad.either<!monad.error<@silenceable>,
                           !transform.any_op, !transform.any_op>
     ^tiled(%tiled_op: !transform.any_op, %tiled_loop: !transform.any_op):
@@ -84,7 +84,7 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
                            !transform.any_op, !transform.any_op>
       // Success goes to ^fused; silenceable is suppressed; definite is not caught, so it ends
       // the inner do (whose union contains definite) and then the sequence.
-      monad.either.catch %fusion, ^fused [!monad.error<@silenceable> -> ^fusion_suppressed]
+      monad.error.catch %fusion, ^fused [!monad.error<@silenceable> -> ^fusion_suppressed]
           : !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>,
                           !transform.any_op, !transform.any_op>
     ^fused(%fused_op: !transform.any_op, %new_loop: !transform.any_op):
@@ -123,7 +123,7 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
 //      so they would disappear (18 -> 14 ops).
 //  (d) failures(propagate) instead of suppress: no inner dos, but the tiling result must be
 //      widened before it can be bound in the sequence's do:
-//        %tiling_widened = monad.either.widen %tiling
+//        %tiling_widened = monad.error.widen %tiling
 //            : !monad.either<!monad.error<@silenceable>,
 //                            (!transform.any_op, !transform.any_op)>
 //            to !monad.either<!monad.error_union<{!monad.error<@definite>,

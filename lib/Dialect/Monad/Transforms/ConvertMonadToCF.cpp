@@ -11,8 +11,8 @@
 // 1. Control flow. Every `monad.do` is inlined into the enclosing region,
 //    outer first, like the `scf.execute_region` lowering: the region blocks
 //    are moved before a new exit block whose argument replaces the result.
-//    The terminators `monad.yield`, `monad.bind`, `monad.either.catch`,
-//    `monad.either.branch`, and `monad.error_union.switch` become `cf`
+//    The terminators `monad.yield`, `monad.bind`, `monad.error.catch`,
+//    `monad.either.branch`, and `monad.error.switch` become `cf`
 //    branches. Their operands are still
 //    monadic values: the lowered values are read from and packed into
 //    monadic values with `builtin.unrealized_conversion_cast`.
@@ -304,7 +304,7 @@ struct SwitchCases {
 };
 
 /// Appends to `cases` one case per error listed in `caseTypes`, the cases of
-/// `monad.either.catch` or `monad.error_union.switch` on a value of `errors`
+/// `monad.error.catch` or `monad.error.switch` on a value of `errors`
 /// lowered to `tag` and `slots`: the case branches to the handler with the
 /// error, or with the group that lists it.
 static void appendCases(OpBuilder &builder, Location loc, const ErrorTags &tags,
@@ -346,10 +346,10 @@ static void createSwitch(OpBuilder &builder, Location loc, Value tag,
                        cases.values, cases.dests, operandRanges);
 }
 
-/// Lowers `monad.either.catch` in a `monad.do` producing `doType` and ending in
+/// Lowers `monad.error.catch` in a `monad.do` producing `doType` and ending in
 /// `exit` to one `cf.switch` on the tag.
-static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
-                       EitherType doType, const ErrorTags &tags) {
+static void lowerErrorCatch(MonadErrorCatchOp catchOp, Block *exit,
+                            EitherType doType, const ErrorTags &tags) {
   OpBuilder builder(catchOp);
   Location loc = catchOp.getLoc();
   EitherType inputType = catchOp.getInput().getType();
@@ -384,31 +384,56 @@ static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
   catchOp.erase();
 }
 
-/// Lowers `monad.error_union.switch` to a `cf.switch` on the tag. The cases
-/// list every member, so the last case is the default successor.
-static void lowerErrorUnionSwitch(MonadErrorUnionSwitchOp switchOp,
-                                  const ErrorTags &tags) {
+/// Lowers `monad.error.switch` to a `cf.switch` on the tag. The `default`
+/// case receives the union of the errors that no case lists; without it, the
+/// cases list every error, so the last case is the default successor.
+static void lowerErrorSwitch(MonadErrorSwitchOp switchOp,
+                             const ErrorTags &tags) {
   OpBuilder builder(switchOp);
   Location loc = switchOp.getLoc();
-  ErrorUnionType errors = switchOp.getInput().getType();
+  ErrorUnionType errors = switchOp.getInputErrors();
   SmallVector<Value> lowered = unpack(builder, loc, switchOp.getInput());
-  Value tag = lowered.front();
+  // A union is its tag and its payload slots; a single error is its payload,
+  // and its tag is a constant.
+  Value tag;
+  ValueRange slots;
+  if (ErrorType error = dyn_cast<ErrorType>(switchOp.getInput().getType())) {
+    tag = createI32(builder, loc, getErrorTag(tags, error));
+    slots = lowered;
+  } else {
+    tag = lowered.front();
+    slots = ValueRange(lowered).drop_front();
+  }
   SwitchCases cases;
-  appendCases(builder, loc, tags, errors, tag, ValueRange(lowered).drop_front(),
-              switchOp.getCaseTypes(), switchOp.getHandlers(), cases);
-  Block *defaultDest = cases.dests.pop_back_val();
-  SmallVector<Value> defaultOperands = cases.operands.pop_back_val();
-  cases.values.pop_back();
+  appendCases(builder, loc, tags, errors, tag, slots, switchOp.getCaseTypes(),
+              switchOp.getCaseHandlers(), cases);
+  Block *defaultDest;
+  SmallVector<Value> defaultOperands;
+  if (Block *handler = switchOp.getDefaultHandler()) {
+    ErrorUnionType rest =
+        ErrorUnionType::get(builder.getContext(), switchOp.getUnlistedErrors());
+    SmallVector<Value> restValues{tag};
+    llvm::append_range(restValues,
+                       remapPayloadSlots(builder, loc, errors, slots, rest));
+    defaultDest = handler;
+    defaultOperands.push_back(pack(builder, loc, rest, restValues));
+  } else {
+    defaultDest = cases.dests.pop_back_val();
+    defaultOperands = cases.operands.pop_back_val();
+    cases.values.pop_back();
+  }
   createSwitch(builder, loc, tag, defaultDest, defaultOperands, cases);
   switchOp.erase();
 }
 
-/// Lowers `monad.either.branch` to a conditional branch.
-static void lowerEitherBranch(MonadEitherBranchOp branch) {
-  OpBuilder builder(branch);
-  Location loc = branch.getLoc();
-  EitherType type = branch.getInput().getType();
-  SmallVector<Value> lowered = unpack(builder, loc, branch.getInput());
+/// Branches on the side of `input`, an either value: a left goes to `left`
+/// with the left value, and a right to `right` with `rightOperands`, or with
+/// the right values if `rightOperands` is not given.
+static void createSideBranch(OpBuilder &builder, Location loc, Value input,
+                             Block *left, Block *right,
+                             std::optional<ValueRange> rightOperands) {
+  EitherType type = cast<EitherType>(input.getType());
+  SmallVector<Value> lowered = unpack(builder, loc, input);
   if (type.getErrorUnion()) {
     // A left error union is the tag and the slots; a left error, its slots.
     ThrowingParts parts = splitThrowing(type, lowered);
@@ -416,21 +441,49 @@ static void lowerEitherBranch(MonadEitherBranchOp branch) {
     if (isa<ErrorUnionType>(type.getLeftType()))
       errorValues.push_back(parts.tag);
     llvm::append_range(errorValues, parts.slots);
+    SmallVector<Value> values =
+        rightOperands
+            ? llvm::to_vector(*rightOperands)
+            : packEach(builder, loc, type.getValueTypes(), parts.values);
     Value isRight =
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, parts.tag,
                               createI32(builder, loc, 0));
     cf::CondBranchOp::create(
-        builder, loc, isRight, branch.getRight(),
-        packEach(builder, loc, type.getValueTypes(), parts.values),
-        branch.getLeft(), pack(builder, loc, type.getLeftType(), errorValues));
-  } else {
-    GeneralParts parts = splitGeneral(type, lowered);
-    cf::CondBranchOp::create(
-        builder, loc, parts.isLeft, branch.getLeft(),
-        pack(builder, loc, type.getLeftType(), parts.left), branch.getRight(),
-        packEach(builder, loc, type.getValueTypes(), parts.values));
+        builder, loc, isRight, right, values, left,
+        pack(builder, loc, type.getLeftType(), errorValues));
+    return;
   }
+  GeneralParts parts = splitGeneral(type, lowered);
+  SmallVector<Value> values =
+      rightOperands
+          ? llvm::to_vector(*rightOperands)
+          : packEach(builder, loc, type.getValueTypes(), parts.values);
+  cf::CondBranchOp::create(builder, loc, parts.isLeft, left,
+                           pack(builder, loc, type.getLeftType(), parts.left),
+                           right, values);
+}
+
+/// Lowers `monad.either.branch` to a conditional branch.
+static void lowerEitherBranch(MonadEitherBranchOp branch) {
+  OpBuilder builder(branch);
+  createSideBranch(builder, branch.getLoc(), branch.getInput(),
+                   branch.getLeft(), branch.getRight(), std::nullopt);
   branch.erase();
+}
+
+/// Lowers `monad.either.catch` in a `monad.do` ending in `exit` to a
+/// conditional branch: a right without a right successor ends the
+/// computation with the input.
+static void lowerEitherCatch(MonadEitherCatchOp catchOp, Block *exit) {
+  OpBuilder builder(catchOp);
+  Value input = catchOp.getInput();
+  if (Block *right = catchOp.getRight())
+    createSideBranch(builder, catchOp.getLoc(), input, catchOp.getLeft(), right,
+                     std::nullopt);
+  else
+    createSideBranch(builder, catchOp.getLoc(), input, catchOp.getLeft(), exit,
+                     ValueRange(input));
+  catchOp.erase();
 }
 
 /// Inlines `doOp` into the enclosing region and lowers the terminators of its
@@ -452,9 +505,12 @@ static void lowerDo(MonadDoOp doOp, const ErrorTags &tags) {
       yield.erase();
     } else if (MonadBindOp bind = dyn_cast<MonadBindOp>(terminator)) {
       lowerBind(bind, exit, doType);
+    } else if (MonadErrorCatchOp catchOp =
+                   dyn_cast<MonadErrorCatchOp>(terminator)) {
+      lowerErrorCatch(catchOp, exit, cast<EitherType>(doType), tags);
     } else if (MonadEitherCatchOp catchOp =
                    dyn_cast<MonadEitherCatchOp>(terminator)) {
-      lowerCatch(catchOp, exit, cast<EitherType>(doType), tags);
+      lowerEitherCatch(catchOp, exit);
     }
   }
   exit->getParent()->getBlocks().splice(exit->getIterator(), body.getBlocks());
@@ -562,28 +618,39 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
   const ErrorTags &tags;
 };
 
-/// Lowers `monad.either.throw` to the tag of the error, poison values, and the
+/// Lowers `monad.error.throw` to the tag of the error, poison values, and the
 /// payload in the slots of the error.
-struct ThrowLowering : public OpConversionPattern<MonadEitherThrowOp> {
+struct ThrowLowering : public OpConversionPattern<MonadErrorThrowOp> {
   /// Creates the pattern with the tags of the errors of the module.
   ThrowLowering(const TypeConverter &converter, MLIRContext *context,
                 const ErrorTags &tags)
       : OpConversionPattern(converter, context), tags(tags) {}
 
-  /// Builds the tag, poison values, and the payload slots.
+  /// Builds the tag, poison values, and the payload slots: those of the
+  /// thrown error, or those of the union moved to the slots of the result.
   LogicalResult
-  matchAndRewrite(MonadEitherThrowOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(MonadErrorThrowOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     EitherType type = op.getType();
-    ErrorType error = op.getError().getType();
-    SmallVector<Value> results{
-        createI32(rewriter, loc, getErrorTag(tags, error))};
-    llvm::append_range(results,
-                       createPoison(rewriter, loc, type.getValueTypes()));
-    llvm::append_range(results,
-                       createPayloadSlots(rewriter, loc, type.getErrorUnion(),
-                                          error, adaptor.getError()));
+    ValueRange thrown = adaptor.getError();
+    SmallVector<Value> results;
+    if (ErrorType error = dyn_cast<ErrorType>(op.getError().getType())) {
+      results.push_back(createI32(rewriter, loc, getErrorTag(tags, error)));
+      llvm::append_range(results,
+                         createPoison(rewriter, loc, type.getValueTypes()));
+      llvm::append_range(results,
+                         createPayloadSlots(rewriter, loc, type.getErrorUnion(),
+                                            error, thrown));
+    } else {
+      ErrorUnionType errors = cast<ErrorUnionType>(op.getError().getType());
+      results.push_back(thrown.front());
+      llvm::append_range(results,
+                         createPoison(rewriter, loc, type.getValueTypes()));
+      llvm::append_range(results, remapPayloadSlots(rewriter, loc, errors,
+                                                    thrown.drop_front(),
+                                                    type.getErrorUnion()));
+    }
     rewriter.replaceOpWithMultiple(op, {results});
     return success();
   }
@@ -624,14 +691,14 @@ struct ErrorPayloadLowering : public OpConversionPattern<MonadErrorPayloadOp> {
   }
 };
 
-/// Lowers `monad.either.widen` by moving the payload slots to those of the
+/// Lowers `monad.error.widen` by moving the payload slots to those of the
 /// larger union.
-struct WidenLowering : public OpConversionPattern<MonadEitherWidenOp> {
+struct WidenLowering : public OpConversionPattern<MonadErrorWidenOp> {
   using OpConversionPattern::OpConversionPattern;
 
   /// Keeps the tag and the values and remaps the payload slots.
   LogicalResult
-  matchAndRewrite(MonadEitherWidenOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(MonadErrorWidenOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     EitherType inputType = op.getInput().getType();
     ThrowingParts parts = splitThrowing(inputType, adaptor.getInput());
@@ -755,9 +822,8 @@ struct ConvertMonadToCFPass
     for (MonadDoOp doOp : doOps)
       lowerDo(doOp, tags);
     module.walk([](MonadEitherBranchOp branch) { lowerEitherBranch(branch); });
-    module.walk([&](MonadErrorUnionSwitchOp switchOp) {
-      lowerErrorUnionSwitch(switchOp, tags);
-    });
+    module.walk(
+        [&](MonadErrorSwitchOp switchOp) { lowerErrorSwitch(switchOp, tags); });
 
     TypeConverter converter;
     converter.addConversion([](Type type) { return type; });

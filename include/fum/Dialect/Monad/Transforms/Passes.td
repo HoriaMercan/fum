@@ -16,8 +16,8 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
   let description = [{
     Lowers the monad dialect to the `cf`, `arith`, and `ub` dialects. Each
     `monad.do` is inlined into the enclosing region, ending in a block that
-    receives the result; `monad.bind`, `monad.either.catch`,
-    `monad.either.branch`, and `monad.error_union.switch` become conditional
+    receives the result; `monad.bind`, `monad.error.catch`,
+    `monad.either.branch`, and `monad.error.switch` become conditional
     branches and switches. Monadic values are then expanded into several
     values:
 
