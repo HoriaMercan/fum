@@ -39,22 +39,33 @@ static void printValueTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
   llvm::interleaveComma(valueTypes, printer);
 }
 
-/// Parses the value types of the right side of an either type: a possibly
-/// empty comma-separated list in parentheses.
+/// Parses the value types of the right side of an either type: a non-empty
+/// comma-separated list of types, where `none` alone stands for no value
+/// types.
 static ParseResult parseRightTypes(AsmParser &parser,
                                    SmallVector<Type> &valueTypes) {
-  return parser.parseCommaSeparatedList(
-      AsmParser::Delimiter::Paren,
-      [&]() { return parser.parseType(valueTypes.emplace_back()); },
-      " in the right side of an either type");
+  SMLoc loc = parser.getCurrentLocation();
+  if (parser.parseCommaSeparatedList(
+          [&]() { return parser.parseType(valueTypes.emplace_back()); }))
+    return failure();
+  if (valueTypes.size() == 1 && isa<NoneType>(valueTypes.front())) {
+    valueTypes.clear();
+    return success();
+  }
+  if (llvm::any_of(valueTypes, llvm::IsaPred<NoneType>))
+    return parser.emitError(loc)
+           << "expects 'none' to be the only right type of an either type";
+  return success();
 }
 
-/// Prints the value types of the right side of an either type in
-/// parentheses.
+/// Prints the value types of the right side of an either type, or `none` if
+/// there are none.
 static void printRightTypes(AsmPrinter &printer, ArrayRef<Type> valueTypes) {
-  printer << "(";
+  if (valueTypes.empty()) {
+    printer << "none";
+    return;
+  }
   llvm::interleaveComma(valueTypes, printer);
-  printer << ")";
 }
 
 /// Sorts error types by name.
@@ -191,8 +202,21 @@ MonadTypeInterface EitherType::cloneWithValueTypes(TypeRange valueTypes) const {
                          llvm::to_vector(valueTypes));
 }
 
-/// Returns the left type if it is an error union, and null otherwise.
+/// Verifies that no value type is `none`, which is printed for an empty list
+/// of value types.
+LogicalResult EitherType::verify(function_ref<InFlightDiagnostic()> emitError,
+                                 Type leftType, ArrayRef<Type> valueTypes) {
+  if (llvm::any_of(valueTypes, llvm::IsaPred<NoneType>))
+    return emitError() << "expects no 'none' value type; an either type "
+                          "without value types is written with 'none'";
+  return success();
+}
+
+/// Returns the errors of the left type: the left type if it is an error
+/// union, the union of the error if it is an error, and null otherwise.
 ErrorUnionType EitherType::getErrorUnion() const {
+  if (ErrorType error = dyn_cast<ErrorType>(getLeftType()))
+    return ErrorUnionType::get(getContext(), {error});
   return dyn_cast<ErrorUnionType>(getLeftType());
 }
 

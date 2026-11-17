@@ -104,38 +104,41 @@ def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
 def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
   let summary = "Either monad type";
   let description = [{
-    A value of type `!monad.either<L, (R1, ..., Rn)>` is either a left
-    carrying one value of type `L`, or a right carrying one value of each
-    type `R1`, ..., `Rn`. Both sides are always written. The right types are
-    the value types of the monad, in parentheses like the results of a
-    function type. With `()`, a right carries no value, so there is exactly
-    one right, as in Haskell's `Either L ()`.
+    A value of type `!monad.either<L, R1, ..., Rn>` is either a left carrying
+    one value of type `L`, or a right carrying one value of each type `R1`,
+    ..., `Rn`. Both sides are always written. The right types are the value
+    types of the monad. A right that carries nothing is written `none`, as
+    in Haskell's `Either L ()`: the monad then has no value types, and
+    `none` cannot appear among other right types.
 
     `monad.return` creates a right and `monad.either.left` a left.
     `monad.bind` continues on a right and ends the enclosing `monad.do` with
     a left. `monad.either.branch` branches on the side.
 
-    When `L` is an `!monad.error_union`, the type describes a computation
-    that may throw: `monad.either.throw`, `monad.either.catch`, and
-    `monad.either.widen` apply.
+    When `L` is an `!monad.error` or an `!monad.error_union`, the type
+    describes a computation that may throw: `monad.either.throw`,
+    `monad.either.catch`, and `monad.either.widen` apply. A single error
+    behaves as the union of that error.
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.
     !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
-                                      !monad.error<"overflow">}>, (i32)>
+                                      !monad.error<"overflow">}>, i32>
     // Either nothing, or a division by zero.
-    !monad.either<!monad.error_union<{!monad.error<"div_by_zero">}>, ()>
+    !monad.either<!monad.error<"div_by_zero">, none>
     ```
   }];
   let parameters = (ins
       "::mlir::Type":$leftType,
       OptionalArrayRefParameter<"::mlir::Type", "value types">:$valueTypes);
   let assemblyFormat = "`<` $leftType `,` custom<RightTypes>($valueTypes) `>`";
+  let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     /// Returns the either type with the given value types and the left type
     /// of this type.
     MonadTypeInterface cloneWithValueTypes(::mlir::TypeRange valueTypes) const;
-    /// Returns the left type if it is an error union, and null otherwise.
+    /// Returns the errors of the left type: the left type if it is an error
+    /// union, the union of the error if it is an error, and null otherwise.
     ErrorUnionType getErrorUnion() const;
   }];
 }

@@ -22,10 +22,11 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
     values:
 
     - `!monad.maybe<T...>` becomes an `i1` (set for `some`) and `T...`;
-    - `!monad.either<!monad.error_union<{E...}>, (R...)>` becomes an `i32` tag
+    - `!monad.either<!monad.error_union<{E...}>, R...>` becomes an `i32` tag
       (0 for a right, otherwise the tag of the error), `R...`, and the
-      payload slots of every error of the union;
-    - any other `!monad.either<L, (R...)>` becomes an `i1` (set for a left),
+      payload slots of every error of the union; an either whose left type
+      is one error is lowered as the union of that error;
+    - any other `!monad.either<L, R...>` becomes an `i1` (set for a left),
       the values of `L`, and `R...`;
     - `!monad.error<"name", P...>` becomes `P...`, and
       `!monad.error_union<{E...}>` an `i32` tag and the payload slots.

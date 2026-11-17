@@ -51,11 +51,12 @@ static void printCases(OpAsmPrinter &printer, Operation *, ArrayAttr caseTypes,
 }
 
 /// Verifies that every case is an error or an error union whose errors are
-/// members of `errors`, that the cases are disjoint, and that each handler
-/// takes one argument of its case type. Inserts the names of the listed
-/// errors into `listed`.
-static LogicalResult verifyCases(Operation *op, ErrorUnionType errors,
-                                 ArrayAttr caseTypes, SuccessorRange handlers,
+/// members of `errors`, the errors of `errorsType`, that the cases are
+/// disjoint, and that each handler takes one argument of its case type.
+/// Inserts the names of the listed errors into `listed`.
+static LogicalResult verifyCases(Operation *op, Type errorsType,
+                                 ErrorUnionType errors, ArrayAttr caseTypes,
+                                 SuccessorRange handlers,
                                  llvm::StringSet<> &listed) {
   for (auto [caseType, handler] :
        llvm::zip_equal(caseTypes.getAsValueRange<TypeAttr>(), handlers)) {
@@ -71,7 +72,7 @@ static LogicalResult verifyCases(Operation *op, ErrorUnionType errors,
     for (ErrorType error : caseErrors) {
       if (!errors.contains(error))
         return op->emitOpError() << "expects the listed error " << error
-                                 << " to be a member of " << errors;
+                                 << " to be an error of " << errorsType;
       if (!listed.insert(error.getName().getValue()).second)
         return op->emitOpError()
                << "expects disjoint cases, got " << error << " twice";
@@ -165,7 +166,8 @@ LogicalResult MonadErrorUnionSwitchOp::verify() {
                          << getCaseTypes().size() << " cases";
   ErrorUnionType errors = getInput().getType();
   llvm::StringSet<> listed;
-  if (failed(verifyCases(*this, errors, getCaseTypes(), getHandlers(), listed)))
+  if (failed(verifyCases(*this, errors, errors, getCaseTypes(), getHandlers(),
+                         listed)))
     return failure();
   for (ErrorType error : errors.getErrors())
     if (!listed.contains(error.getName().getValue()))
@@ -214,15 +216,16 @@ SuccessorOperands MonadEitherBranchOp::getSuccessorOperands(unsigned index) {
 // MonadEitherThrowOp
 //===----------------------------------------------------------------------===//
 
-/// Verifies that the error is a member of the error union of the result.
+/// Verifies that the error is an error of the left type of the result.
 LogicalResult MonadEitherThrowOp::verify() {
   ErrorUnionType errors = getResult().getType().getErrorUnion();
   if (!errors)
     return emitOpError() << "expects the left type of the result to be an "
-                            "error union";
+                            "error or an error union";
   if (!errors.contains(getError().getType()))
     return emitOpError() << "expects " << getError().getType()
-                         << " to be a member of " << errors;
+                         << " to be an error of "
+                         << getResult().getType().getLeftType();
   return success();
 }
 
@@ -294,12 +297,14 @@ LogicalResult MonadEitherCatchOp::verify() {
   ErrorUnionType inputErrors = inputType.getErrorUnion();
   if (!inputErrors)
     return emitOpError()
-           << "expects the left type of the input to be an error union";
+           << "expects the left type of the input to be an error or an error "
+              "union";
   EitherType doType = dyn_cast<EitherType>(getParentOp().getType());
   ErrorUnionType doErrors = doType ? doType.getErrorUnion() : nullptr;
   if (!doErrors)
     return emitOpError() << "expects the enclosing monad.do to produce an "
-                            "either value whose left type is an error union";
+                            "either value whose left type is an error or an "
+                            "error union";
 
   if (Block *ok = getOk()) {
     if (ok->getArgumentTypes() != TypeRange(inputType.getValueTypes()))
@@ -313,15 +318,15 @@ LogicalResult MonadEitherCatchOp::verify() {
   }
 
   llvm::StringSet<> caught;
-  if (failed(verifyCases(*this, inputErrors, getCaseTypes(), getHandlers(),
-                         caught)))
+  if (failed(verifyCases(*this, inputType.getLeftType(), inputErrors,
+                         getCaseTypes(), getHandlers(), caught)))
     return failure();
   for (ErrorType error : inputErrors.getErrors())
     if (!caught.contains(error.getName().getValue()) &&
         !doErrors.contains(error))
       return emitOpError() << "expects the uncaught error " << error
-                           << " to be a member of " << doErrors
-                           << " of the enclosing monad.do";
+                           << " to be an error of " << doType.getLeftType()
+                           << ", the left type of the enclosing monad.do";
   return success();
 }
 

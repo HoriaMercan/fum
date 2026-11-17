@@ -247,8 +247,8 @@ func.func private @either_without_right(!monad.either<i32>)
 
 // -----
 
-// expected-error @below {{expected '(' in the right side of an either type}}
-func.func private @either_right_without_parentheses(!monad.either<i32, f32>)
+// expected-error @below {{expects 'none' to be the only right type of an either type}}
+func.func private @either_none_among_right_types(!monad.either<i32, f32, none>)
 
 // -----
 
@@ -262,15 +262,15 @@ func.func @error_make_wrong_payload(%value: i64) {
 
 func.func @either_left_wrong_type(%value: i64) {
   // expected-error @below {{failed to verify that value type matches the left type of the result}}
-  %left = "monad.either.left"(%value) : (i64) -> !monad.either<i32, ()>
+  %left = "monad.either.left"(%value) : (i64) -> !monad.either<i32, none>
   return
 }
 
 // -----
 
-func.func @either_branch_wrong_left(%input: !monad.either<i32, (f32)>) {
+func.func @either_branch_wrong_left(%input: !monad.either<i32, f32>) {
   // expected-error @below {{expects the left successor to take one argument of type 'i32'}}
-  monad.either.branch %input, left ^left, right ^right : !monad.either<i32, (f32)>
+  monad.either.branch %input, left ^left, right ^right : !monad.either<i32, f32>
 ^left(%l: f32):
   return
 ^right(%r: f32):
@@ -281,8 +281,17 @@ func.func @either_branch_wrong_left(%input: !monad.either<i32, (f32)>) {
 
 func.func @throw_non_member() {
   %error = monad.error.make : !monad.error<"c">
-  // expected-error @below {{expects '!monad.error<"c">' to be a member of '!monad.error_union<{!monad.error<"a">}>'}}
-  %thrown = monad.either.throw %error : !monad.error<"c"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+  // expected-error @below {{expects '!monad.error<"c">' to be an error of '!monad.error_union<{!monad.error<"a">}>'}}
+  %thrown = monad.either.throw %error : !monad.error<"c"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+  return
+}
+
+// -----
+
+func.func @throw_other_single_error() {
+  %error = monad.error.make : !monad.error<"b">
+  // expected-error @below {{expects '!monad.error<"b">' to be an error of '!monad.error<"a">'}}
+  %thrown = monad.either.throw %error : !monad.error<"b"> -> !monad.either<!monad.error<"a">, i32>
   return
 }
 
@@ -290,8 +299,8 @@ func.func @throw_non_member() {
 
 func.func @throw_into_general_either() {
   %error = monad.error.make : !monad.error<"a">
-  // expected-error @below {{expects the left type of the result to be an error union}}
-  %thrown = monad.either.throw %error : !monad.error<"a"> -> !monad.either<i32, ()>
+  // expected-error @below {{expects the left type of the result to be an error or an error union}}
+  %thrown = monad.either.throw %error : !monad.error<"a"> -> !monad.either<i32, none>
   return
 }
 
@@ -299,55 +308,55 @@ func.func @throw_into_general_either() {
 
 func.func @throw_other_payload(%value: i32) {
   %error = monad.error.make %value : !monad.error<"a", i32>
-  // expected-error @below {{to be a member of}}
-  %thrown = monad.either.throw %error : !monad.error<"a", i32> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+  // expected-error @below {{to be an error of}}
+  %thrown = monad.either.throw %error : !monad.error<"a", i32> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   return
 }
 
 // -----
 
-func.func @widen_to_smaller(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>) {
+func.func @widen_to_smaller(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>) {
   // expected-error @below {{operand type}}
-  %widened = monad.either.widen %input : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)> to !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+  %widened = monad.either.widen %input : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32> to !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   return
 }
 
 // -----
 
-func.func @widen_other_values(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
+func.func @widen_other_values(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
   // expected-error @below {{operand type}}
-  %widened = monad.either.widen %input : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> to !monad.either<!monad.error_union<{!monad.error<"a">}>, (i64)>
+  %widened = monad.either.widen %input : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> to !monad.either<!monad.error_union<{!monad.error<"a">}>, i64>
   return
 }
 
 // -----
 
-func.func @catch_outside_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
+func.func @catch_outside_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
   // expected-error @below {{expects parent op 'monad.do'}}
-  monad.either.catch %input [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+  monad.either.catch %input [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
 ^handler(%error: !monad.error<"a">):
   return
 }
 
 // -----
 
-func.func @catch_general_either(%input: !monad.either<i32, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
-    // expected-error @below {{expects the left type of the input to be an error union}}
-    monad.either.catch %input, ^ok [] : !monad.either<i32, (i32)>
+func.func @catch_general_either(%input: !monad.either<i32, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
+    // expected-error @below {{expects the left type of the input to be an error or an error union}}
+    monad.either.catch %input, ^ok [] : !monad.either<i32, i32>
   ^ok(%value: i32):
-    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_in_maybe_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
+func.func @catch_in_maybe_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
   %result = monad.do : !monad.maybe<i32> {
-    // expected-error @below {{expects the enclosing monad.do to produce an either value whose left type is an error union}}
-    monad.either.catch %input, ^ok [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    // expected-error @below {{expects the enclosing monad.do to produce an either value whose left type is an error or an error union}}
+    monad.either.catch %input, ^ok [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^ok(%value: i32):
     %wrapped = monad.return %value : !monad.maybe<i32>
     monad.yield %wrapped : !monad.maybe<i32>
@@ -360,18 +369,18 @@ func.func @catch_in_maybe_do(%input: !monad.either<!monad.error_union<{!monad.er
 
 // -----
 
-func.func @catch_ok_wrong_arguments(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+func.func @catch_ok_wrong_arguments(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects the ok successor to take arguments of types ('i32')}}
-    monad.either.catch %input, ^ok [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+    monad.either.catch %input, ^ok [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   ^ok(%value: i64):
     %error = monad.error.make : !monad.error<"a">
-    %thrown = monad.either.throw %error : !monad.error<"a"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %thrown : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %thrown = monad.either.throw %error : !monad.error<"a"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %thrown : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^handler(%caught: !monad.error<"b">):
     %error2 = monad.error.make : !monad.error<"a">
-    %thrown2 = monad.either.throw %error2 : !monad.error<"a"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %thrown2 : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %thrown2 = monad.either.throw %error2 : !monad.error<"a"> -> !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %thrown2 : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
@@ -379,86 +388,86 @@ func.func @catch_ok_wrong_arguments(%input: !monad.either<!monad.error_union<{!m
 // -----
 
 // Without ^ok, the input must be of the result type of the do.
-func.func @catch_without_ok_other_type(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+func.func @catch_without_ok_other_type(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects the input to be of the result type of the enclosing monad.do without an ok successor}}
-    monad.either.catch %input [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+    monad.either.catch %input [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   ^handler(%error: !monad.error<"b">):
     %zero = arith.constant 0 : i32
-    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_non_member(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
-    // expected-error @below {{expects the listed error '!monad.error<"b">' to be a member of '!monad.error_union<{!monad.error<"a">}>'}}
-    monad.either.catch %input [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+func.func @catch_non_member(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
+    // expected-error @below {{expects the listed error '!monad.error<"b">' to be an error of '!monad.error_union<{!monad.error<"a">}>'}}
+    monad.either.catch %input [!monad.error<"b"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^handler(%error: !monad.error<"b">):
     %zero = arith.constant 0 : i32
-    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_successor_count(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+func.func @catch_successor_count(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects one successor per case, and optionally an ok successor before them, got 3 successors for 1 cases}}
-    "monad.either.catch"(%input)[^next, ^next, ^next] {caseTypes = [!monad.error<"a">]} : (!monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) -> ()
+    "monad.either.catch"(%input)[^next, ^next, ^next] {caseTypes = [!monad.error<"a">]} : (!monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) -> ()
   ^next(%value: i32):
-    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_overlapping_cases(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)> {
+func.func @catch_overlapping_cases(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32> {
     // expected-error @below {{expects disjoint cases, got '!monad.error<"a">' twice}}
-    monad.either.catch %input [!monad.error<"a"> -> ^first, !monad.error_union<{!monad.error<"a">, !monad.error<"b">}> -> ^second] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+    monad.either.catch %input [!monad.error<"a"> -> ^first, !monad.error_union<{!monad.error<"a">, !monad.error<"b">}> -> ^second] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   ^first(%error: !monad.error<"a">):
     %zero = arith.constant 0 : i32
-    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   ^second(%errors: !monad.error_union<{!monad.error<"a">, !monad.error<"b">}>):
     %one = arith.constant 1 : i32
-    %wrapped1 = monad.return %one : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
-    monad.yield %wrapped1 : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+    %wrapped1 = monad.return %one : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
+    monad.yield %wrapped1 : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_case_not_error(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+func.func @catch_case_not_error(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects every case to be an error or an error union, got 'i32'}}
-    monad.either.catch %input [i32 -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    monad.either.catch %input [i32 -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^handler(%error: i32):
-    %wrapped = monad.return %error : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %error : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @catch_handler_wrong_argument(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+func.func @catch_handler_wrong_argument(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects the handler of '!monad.error<"a">' to take one argument of that type}}
-    monad.either.catch %input [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    monad.either.catch %input [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^handler(%error: !monad.error<"b">):
     %zero = arith.constant 0 : i32
-    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
@@ -466,30 +475,30 @@ func.func @catch_handler_wrong_argument(%input: !monad.either<!monad.error_union
 // -----
 
 // The do admits only "a", but "b" is not caught.
-func.func @catch_uncaught_not_in_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
-    // expected-error @below {{expects the uncaught error '!monad.error<"b">' to be a member of '!monad.error_union<{!monad.error<"a">}>' of the enclosing monad.do}}
-    monad.either.catch %input, ^ok [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, (i32)>
+func.func @catch_uncaught_not_in_do(%input: !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
+    // expected-error @below {{expects the uncaught error '!monad.error<"b">' to be an error of '!monad.error_union<{!monad.error<"a">}>', the left type of the enclosing monad.do}}
+    monad.either.catch %input, ^ok [!monad.error<"a"> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<"a">, !monad.error<"b">}>, i32>
   ^ok(%value: i32):
-    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^handler(%error: !monad.error<"a">):
     %zero = arith.constant 0 : i32
-    %recovered = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %recovered : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %recovered = monad.return %zero : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %recovered : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
 
 // -----
 
-func.func @bind_other_left(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"b">}>, (i32)> {
+func.func @bind_other_left(%input: !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>) {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"b">}>, i32> {
     // expected-error @below {{expects the input to be of the monad of the enclosing monad.do}}
-    monad.bind %input, ^next : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    monad.bind %input, ^next : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   ^next(%value: i32):
-    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"b">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"b">}>, (i32)>
+    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"b">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"b">}>, i32>
   }
   return
 }
@@ -497,12 +506,12 @@ func.func @bind_other_left(%input: !monad.either<!monad.error_union<{!monad.erro
 // -----
 
 func.func @bind_maybe_in_either(%input: !monad.maybe<i32>) {
-  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)> {
+  %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32> {
     // expected-error @below {{expects the input to be of the monad of the enclosing monad.do}}
     monad.bind %input, ^next : !monad.maybe<i32>
   ^next(%value: i32):
-    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
-    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+    %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
+    monad.yield %wrapped : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
   }
   return
 }
@@ -528,7 +537,7 @@ func.func @switch_handler_count(%error: !monad.error_union<{!monad.error<"a">}>)
 // -----
 
 func.func @switch_non_member(%error: !monad.error_union<{!monad.error<"a">}>) {
-  // expected-error @below {{expects the listed error '!monad.error<"b">' to be a member of '!monad.error_union<{!monad.error<"a">}>'}}
+  // expected-error @below {{expects the listed error '!monad.error<"b">' to be an error of '!monad.error_union<{!monad.error<"a">}>'}}
   monad.error_union.switch %error [!monad.error<"a"> -> ^a, !monad.error<"b"> -> ^b] : !monad.error_union<{!monad.error<"a">}>
 ^a(%a: !monad.error<"a">):
   return

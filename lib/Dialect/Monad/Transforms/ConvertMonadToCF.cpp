@@ -411,9 +411,12 @@ static void lowerEitherBranch(MonadEitherBranchOp branch) {
   Location loc = branch.getLoc();
   EitherType type = branch.getInput().getType();
   SmallVector<Value> lowered = unpack(builder, loc, branch.getInput());
-  if (ErrorUnionType errors = type.getErrorUnion()) {
+  if (type.getErrorUnion()) {
+    // A left error union is the tag and the slots; a left error, its slots.
     ThrowingParts parts = splitThrowing(type, lowered);
-    SmallVector<Value> errorValues{parts.tag};
+    SmallVector<Value> errorValues;
+    if (isa<ErrorUnionType>(type.getLeftType()))
+      errorValues.push_back(parts.tag);
     llvm::append_range(errorValues, parts.slots);
     Value isRight =
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, parts.tag,
@@ -421,7 +424,7 @@ static void lowerEitherBranch(MonadEitherBranchOp branch) {
     cf::CondBranchOp::create(
         builder, loc, isRight, branch.getRight(),
         packEach(builder, loc, type.getValueTypes(), parts.values),
-        branch.getLeft(), pack(builder, loc, errors, errorValues));
+        branch.getLeft(), pack(builder, loc, type.getLeftType(), errorValues));
   } else {
     GeneralParts parts = splitGeneral(type, lowered);
     cf::CondBranchOp::create(
@@ -532,7 +535,14 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
     EitherType type = op.getType();
     SmallVector<Value> results;
     ValueRange left = adaptor.getValue();
-    if (type.getErrorUnion()) {
+    if (ErrorType error = dyn_cast<ErrorType>(type.getLeftType())) {
+      // The lowered error is its payload; the tag is the tag of the error.
+      results.push_back(
+          createI32(rewriter, loc, getErrorTag(error.getName().getValue())));
+      llvm::append_range(results,
+                         createPoison(rewriter, loc, type.getValueTypes()));
+      llvm::append_range(results, left);
+    } else if (type.getErrorUnion()) {
       // The lowered error union is a tag followed by the payload slots.
       results.push_back(left.front());
       llvm::append_range(results,

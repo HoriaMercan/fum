@@ -218,7 +218,7 @@ def MonadEitherLeftOp : Monad_Op<"either.left", [
     Creates the left either value carrying the given value.
 
     ```mlir
-    %m = monad.either.left %x : !monad.either<i32, (f32)>
+    %m = monad.either.left %x : !monad.either<i32, f32>
     ```
   }];
   let arguments = (ins AnyType:$value);
@@ -237,7 +237,7 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
     arguments are produced by the branch, which forwards no operands.
 
     ```mlir
-    monad.either.branch %m, left ^l, right ^r : !monad.either<i32, (f32)>
+    monad.either.branch %m, left ^l, right ^r : !monad.either<i32, f32>
     ^l(%x: i32):
     ^r(%y: f32):
     ```
@@ -252,18 +252,18 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
 }
 
 //===----------------------------------------------------------------------===//
-// Exception operations: either whose left type is an error union
+// Exception operations: either whose left type is an error or an error union
 //===----------------------------------------------------------------------===//
 
 def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
   let summary = "Creates an either value that holds an error";
   let description = [{
-    Creates the left either value holding the error `error`, which must be a
-    member of the error union that is the left type of the result.
+    Creates the left either value holding the error `error`. The left type
+    of the result is that error, or an error union of which it is a member.
 
     ```mlir
     %m = monad.either.throw %e : !monad.error<"overflow">
-        -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, (i32)>
+        -> !monad.either<!monad.error<"overflow">, i32>
     ```
   }];
   let arguments = (ins MonadErrorType:$error);
@@ -281,7 +281,8 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
   let summary = "Handles the errors of an either value";
   let description = [{
     Continues the enclosing `monad.do` depending on the input, an either
-    value whose left type is an error union:
+    value whose left type is an error or an error union. A single error
+    behaves as the union of that error:
 
     - a right branches to `^ok` with its values; without `^ok`, the
       `monad.do` ends with the input, whose type must then be the result
@@ -290,16 +291,16 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
       one argument of the case type: an error type, or an error union for a
       group of errors;
     - any other error ends the `monad.do` with that error, which must
-      therefore be a member of the error union of the `monad.do`.
+      therefore be an error of the left type of the `monad.do`.
 
-    The cases are disjoint, and their errors are members of the error union
-    of the input. The successor arguments are produced by the catch, which
+    The cases are disjoint, and their errors are errors of the left type of
+    the input. The successor arguments are produced by the catch, which
     forwards no operands.
 
     ```mlir
     monad.either.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
         : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
-                                            !monad.error<"overflow">}>, (i32)>
+                                            !monad.error<"overflow">}>, i32>
     ^ok(%x: i32):
     ^recover(%e: !monad.error<"div_by_zero">):
     ```
@@ -320,17 +321,17 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
 def MonadEitherWidenOp : Monad_Op<"either.widen", [
     Pure,
     DeclareOpInterfaceMethods<CastOpInterface>]> {
-  let summary = "Widens the error union of an either value";
+  let summary = "Widens the errors of an either value";
   let description = [{
-    Converts an either value whose left type is an error union to the same
-    either type with a larger error union. The errors of the input must be
-    members of the error union of the result.
+    Converts an either value whose left type is an error or an error union
+    to an either type with the same value types and more errors. The errors
+    of the input must be errors of the left type of the result.
 
     ```mlir
     %w = monad.either.widen %m
-        : !monad.either<!monad.error_union<{!monad.error<"a">}>, (i32)>
+        : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
         to !monad.either<!monad.error_union<{!monad.error<"a">,
-                                             !monad.error<"b">}>, (i32)>
+                                             !monad.error<"b">}>, i32>
     ```
   }];
   let arguments = (ins MonadEitherType:$input);
