@@ -118,9 +118,11 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
     `monad.either.catch` handles a left inside a `monad.do`.
 
     When `L` is an `!monad.error` or an `!monad.error_union`, the type
-    describes a computation that may throw: `monad.error.throw`,
-    `monad.error.catch`, and `monad.error.widen` apply. A single error
-    behaves as the union of that error.
+    describes a computation that may throw: `monad.error.throw` creates an
+    error, `monad.error.widen` converts it to the left type, and
+    `monad.either.left` puts it on the left; `monad.error.catch` handles the
+    errors of the left. A single error behaves as the union of that
+    error.
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.

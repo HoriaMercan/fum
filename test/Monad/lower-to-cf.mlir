@@ -33,8 +33,9 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!monad.error_union<{!mona
     %pass = monad.return : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
     %zero = arith.constant 0 : i32
     %is_zero = arith.cmpi eq, %b, %zero : i32
-    %division_error = monad.error.make : !monad.error<@div_by_zero>
-    %division_failure = monad.error.throw %division_error : !monad.error<@div_by_zero> -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
+    %division_error = monad.error.throw : !monad.error<@div_by_zero>
+    %division_failure_left = monad.error.widen %division_error : !monad.error<@div_by_zero> to !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
+    %division_failure = monad.either.left %division_failure_left : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
     %divisor_check = arith.select %is_zero, %division_failure, %pass : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
     monad.bind %divisor_check, ^divisor_nonzero : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
   ^divisor_nonzero:
@@ -43,8 +44,9 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!monad.error_union<{!mona
     %a_is_int_min = arith.cmpi eq, %a, %int_min : i32
     %b_is_minus_one = arith.cmpi eq, %b, %minus_one : i32
     %overflows = arith.andi %a_is_int_min, %b_is_minus_one : i1
-    %overflow_error = monad.error.make : !monad.error<@overflow>
-    %overflow_failure = monad.error.throw %overflow_error : !monad.error<@overflow> -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
+    %overflow_error = monad.error.throw : !monad.error<@overflow>
+    %overflow_failure_left = monad.error.widen %overflow_error : !monad.error<@overflow> to !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
+    %overflow_failure = monad.either.left %overflow_failure_left : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
     %overflow_check = arith.select %overflows, %overflow_failure, %pass : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
     monad.bind %overflow_check, ^safe : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, none>
   ^safe:
@@ -94,8 +96,8 @@ func.func @tile_using_forall(%target: i32) -> !monad.either<!monad.error<@silenc
   %ten = arith.constant 10 : i32
   %twenty = arith.constant 20 : i32
   %is_zero = arith.cmpi eq, %target, %zero : i32
-  %error = monad.error.make : !monad.error<@silenceable>
-  %failure = monad.error.throw %error : !monad.error<@silenceable> -> !monad.either<!monad.error<@silenceable>, i32, i32>
+  %error = monad.error.throw : !monad.error<@silenceable>
+  %failure = monad.either.left %error : !monad.either<!monad.error<@silenceable>, i32, i32>
   %tiled_op = arith.addi %target, %ten : i32
   %loop = arith.addi %target, %twenty : i32
   %success = monad.return %tiled_op, %loop : !monad.either<!monad.error<@silenceable>, i32, i32>
@@ -116,10 +118,12 @@ func.func @fuse_into_containing_op(%producer: i32, %containing: i32)
   %two_hundred = arith.constant 200 : i32
   %is_definite = arith.cmpi eq, %producer, %two : i32
   %is_silenceable = arith.cmpi eq, %containing, %one : i32
-  %definite_error = monad.error.make : !monad.error<@definite>
-  %definite = monad.error.throw %definite_error : !monad.error<@definite> -> !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>, i32, i32>
-  %silenceable_error = monad.error.make : !monad.error<@silenceable>
-  %silenceable = monad.error.throw %silenceable_error : !monad.error<@silenceable> -> !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>, i32, i32>
+  %definite_error = monad.error.throw : !monad.error<@definite>
+  %definite_left = monad.error.widen %definite_error : !monad.error<@definite> to !monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>
+  %definite = monad.either.left %definite_left : !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>, i32, i32>
+  %silenceable_error = monad.error.throw : !monad.error<@silenceable>
+  %silenceable_left = monad.error.widen %silenceable_error : !monad.error<@silenceable> to !monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>
+  %silenceable = monad.either.left %silenceable_left : !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>, i32, i32>
   %fused_op = arith.addi %producer, %hundred : i32
   %new_loop = arith.addi %containing, %two_hundred : i32
   %success = monad.return %fused_op, %new_loop : !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>, i32, i32>
@@ -216,8 +220,8 @@ func.func @first_negative(%x: i32, %y: i32, %z: i32) -> i32 {
 func.func @clamp_index(%index: i32, %size: i32) -> !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32> {
   %result = monad.do : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32> {
     %in_bounds = arith.cmpi slt, %index, %size : i32
-    %error = monad.error.make %index, %size : !monad.error<@out_of_bounds, i32, i32>
-    %failure = monad.error.throw %error : !monad.error<@out_of_bounds, i32, i32> -> !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
+    %error = monad.error.throw %index, %size : !monad.error<@out_of_bounds, i32, i32>
+    %failure = monad.either.left %error : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
     %success = monad.return %index : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
     %checked = arith.select %in_bounds, %success, %failure : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
     monad.error.catch %checked [!monad.error<@out_of_bounds, i32, i32> -> ^clamp] : !monad.either<!monad.error<@out_of_bounds, i32, i32>, i32>
@@ -253,7 +257,8 @@ func.func @half_ratio_long(%a: i32, %b: i32) -> !monad.either<!monad.error<@over
     %recovered = monad.return %zero : !monad.either<!monad.error<@overflow>, i32>
     monad.yield %recovered : !monad.either<!monad.error<@overflow>, i32>
   ^other(%others: !monad.error_union<{!monad.error<@overflow>}>):
-    %again = monad.error.throw %others : !monad.error_union<{!monad.error<@overflow>}> -> !monad.either<!monad.error<@overflow>, i32>
+    %again_left = monad.error.widen %others : !monad.error_union<{!monad.error<@overflow>}> to !monad.error<@overflow>
+    %again = monad.either.left %again_left : !monad.either<!monad.error<@overflow>, i32>
     monad.yield %again : !monad.either<!monad.error<@overflow>, i32>
   ^ok(%quotient: i32):
     %success = monad.return %quotient : !monad.either<!monad.error<@overflow>, i32>
@@ -265,6 +270,19 @@ func.func @half_ratio_long(%a: i32, %b: i32) -> !monad.either<!monad.error<@over
 //===----------------------------------------------------------------------===//
 // Checks for @main
 //===----------------------------------------------------------------------===//
+
+// Widens the left of %m to the errors of safe_div: the error layer widens the
+// error, and the either layer rebuilds the left.
+func.func @widen_overflow(%m: !monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32> {
+  monad.either.branch %m, left ^left, right ^right : !monad.either<!monad.error<@overflow>, i32>
+^left(%error: !monad.error<@overflow>):
+  %errors = monad.error.widen %error : !monad.error<@overflow> to !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
+  %widened = monad.either.left %errors : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  return %widened : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+^right(%value: i32):
+  %success = monad.return %value : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  return %success : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+}
 
 // Returns whether %m is a right holding %expected.
 func.func @holds(%m: !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, %expected: i32) -> i1 {
@@ -360,15 +378,16 @@ func.func @main() -> i32 {
   %ok3 = func.call @throws(%r3, %true) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i1) -> i1
 
   // 4-6: half_ratio(7, 2) = 3, half_ratio(7, 0) = 0,
-  // half_ratio(INT_MIN, -1) = overflow, widened to reuse the checks.
+  // half_ratio(INT_MIN, -1) = overflow, widened by @widen_overflow to reuse
+  // the checks.
   %h4 = func.call @half_ratio(%seven, %two) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %r4 = monad.error.widen %h4 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %r4 = func.call @widen_overflow(%h4) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok4 = func.call @holds(%r4, %three) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i32) -> i1
   %h5 = func.call @half_ratio(%seven, %zero) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %r5 = monad.error.widen %h5 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %r5 = func.call @widen_overflow(%h5) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok5 = func.call @holds(%r5, %zero) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i32) -> i1
   %h6 = func.call @half_ratio(%int_min, %minus_one) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %r6 = monad.error.widen %h6 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %r6 = func.call @widen_overflow(%h6) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok6 = func.call @throws(%r6, %true) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i1) -> i1
 
   // 7-10: tile_and_fuse(5, 6) = (106, 225), tile_and_fuse(0, 6) = (106, 200),
@@ -391,13 +410,13 @@ func.func @main() -> i32 {
 
   // 14-16: half_ratio_long gives the results of half_ratio: 3, 0, overflow.
   %l14 = func.call @half_ratio_long(%seven, %two) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %w14 = monad.error.widen %l14 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %w14 = func.call @widen_overflow(%l14) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok14 = func.call @holds(%w14, %three) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i32) -> i1
   %l15 = func.call @half_ratio_long(%seven, %zero) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %w15 = monad.error.widen %l15 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %w15 = func.call @widen_overflow(%l15) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok15 = func.call @holds(%w15, %zero) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i32) -> i1
   %l16 = func.call @half_ratio_long(%int_min, %minus_one) : (i32, i32) -> !monad.either<!monad.error<@overflow>, i32>
-  %w16 = monad.error.widen %l16 : !monad.either<!monad.error<@overflow>, i32> to !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
+  %w16 = func.call @widen_overflow(%l16) : (!monad.either<!monad.error<@overflow>, i32>) -> !monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>
   %ok16 = func.call @throws(%w16, %true) : (!monad.either<!monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>, i32>, i1) -> i1
 
   // 13: clamp_index(10, 10) = 9, from the payload of out_of_bounds.

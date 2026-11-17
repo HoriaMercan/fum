@@ -121,15 +121,14 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
 //      monad.either.branch outside the do, which splits the sequence. Rejected.
 //  (c) catch without ^ok (P2 alternative c): ^tiled and ^fused only re-wrap their arguments,
 //      so they would disappear (18 -> 14 ops).
-//  (d) failures(propagate) instead of suppress: no inner dos, but the tiling result must be
-//      widened before it can be bound in the sequence's do:
-//        %tiling_widened = monad.error.widen %tiling
-//            : !monad.either<!monad.error<@silenceable>,
-//                            (!transform.any_op, !transform.any_op)>
-//            to !monad.either<!monad.error_union<{!monad.error<@definite>,
-//                                                 !monad.error<@silenceable>}>,
-//                             (!transform.any_op, !transform.any_op)>
-//        monad.bind %tiling_widened, ^after_tiling
-//            : !monad.either<!monad.error_union<{!monad.error<@definite>,
-//                                                !monad.error<@silenceable>}>,
-//                            (!transform.any_op, !transform.any_op)>
+//  (d) failures(propagate) instead of suppress: no inner dos, but the error of the tiling
+//      result must be widened before it can be bound in the sequence's do. Only errors
+//      are widened, so the either is taken apart and rebuilt:
+//        monad.either.branch %tiling, left ^tiling_failed, right ^tiled
+//      ^tiling_failed(%error: !monad.error<@silenceable>):
+//        %errors = monad.error.widen %error : !monad.error<@silenceable>
+//            to !monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>
+//        %failure = monad.either.left %errors
+//            : !monad.either<!monad.error_union<{!monad.error<@definite>, !monad.error<@silenceable>}>,
+//                            !transform.any_op, !transform.any_op>
+//      More ops per step than (a). Rejected.

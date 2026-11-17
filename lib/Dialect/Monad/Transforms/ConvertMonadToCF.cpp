@@ -145,23 +145,6 @@ static SmallVector<Value> remapPayloadSlots(OpBuilder &builder, Location loc,
   return results;
 }
 
-/// Returns the payload slots of the union `errors` holding `payload` in the
-/// slots of `error` and poison elsewhere.
-static SmallVector<Value> createPayloadSlots(OpBuilder &builder, Location loc,
-                                             ErrorUnionType errors,
-                                             ErrorType error,
-                                             ValueRange payload) {
-  SmallVector<Value> results;
-  for (ErrorType member : errors.getErrors()) {
-    if (member == error)
-      llvm::append_range(results, payload);
-    else
-      llvm::append_range(results,
-                         createPoison(builder, loc, member.getPayloadTypes()));
-  }
-  return results;
-}
-
 /// Splits `values`, the lowered values of `types`, into one range per type.
 static SmallVector<ValueRange> splitLoweredValues(TypeRange types,
                                                   ValueRange values) {
@@ -618,54 +601,13 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
   const ErrorTags &tags;
 };
 
-/// Lowers `monad.error.throw` to the tag of the error, poison values, and the
-/// payload in the slots of the error.
-struct ThrowLowering : public OpConversionPattern<MonadErrorThrowOp> {
-  /// Creates the pattern with the tags of the errors of the module.
-  ThrowLowering(const TypeConverter &converter, MLIRContext *context,
-                const ErrorTags &tags)
-      : OpConversionPattern(converter, context), tags(tags) {}
-
-  /// Builds the tag, poison values, and the payload slots: those of the
-  /// thrown error, or those of the union moved to the slots of the result.
-  LogicalResult
-  matchAndRewrite(MonadErrorThrowOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    EitherType type = op.getType();
-    ValueRange thrown = adaptor.getError();
-    SmallVector<Value> results;
-    if (ErrorType error = dyn_cast<ErrorType>(op.getError().getType())) {
-      results.push_back(createI32(rewriter, loc, getErrorTag(tags, error)));
-      llvm::append_range(results,
-                         createPoison(rewriter, loc, type.getValueTypes()));
-      llvm::append_range(results,
-                         createPayloadSlots(rewriter, loc, type.getErrorUnion(),
-                                            error, thrown));
-    } else {
-      ErrorUnionType errors = cast<ErrorUnionType>(op.getError().getType());
-      results.push_back(thrown.front());
-      llvm::append_range(results,
-                         createPoison(rewriter, loc, type.getValueTypes()));
-      llvm::append_range(results, remapPayloadSlots(rewriter, loc, errors,
-                                                    thrown.drop_front(),
-                                                    type.getErrorUnion()));
-    }
-    rewriter.replaceOpWithMultiple(op, {results});
-    return success();
-  }
-
-  /// The tags of the errors of the module.
-  const ErrorTags &tags;
-};
-
-/// Lowers `monad.error.make` to its payload.
-struct ErrorMakeLowering : public OpConversionPattern<MonadErrorMakeOp> {
+/// Lowers `monad.error.throw` to its payload.
+struct ErrorThrowLowering : public OpConversionPattern<MonadErrorThrowOp> {
   using OpConversionPattern::OpConversionPattern;
 
   /// Replaces the error with its payload values.
   LogicalResult
-  matchAndRewrite(MonadErrorMakeOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(MonadErrorThrowOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> results;
     for (ValueRange range : adaptor.getPayload())
@@ -692,25 +634,48 @@ struct ErrorPayloadLowering : public OpConversionPattern<MonadErrorPayloadOp> {
 };
 
 /// Lowers `monad.error.widen` by moving the payload slots to those of the
-/// larger union.
+/// result: an error is its payload with a constant tag, and a union is its
+/// tag and its payload slots.
 struct WidenLowering : public OpConversionPattern<MonadErrorWidenOp> {
-  using OpConversionPattern::OpConversionPattern;
+  /// Creates the pattern with the tags of the errors of the module.
+  WidenLowering(const TypeConverter &converter, MLIRContext *context,
+                const ErrorTags &tags)
+      : OpConversionPattern(converter, context), tags(tags) {}
 
-  /// Keeps the tag and the values and remaps the payload slots.
+  /// Reads the tag and the slots of the input and builds those of the result.
   LogicalResult
   matchAndRewrite(MonadErrorWidenOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    EitherType inputType = op.getInput().getType();
-    ThrowingParts parts = splitThrowing(inputType, adaptor.getInput());
-    SmallVector<Value> results{parts.tag};
-    llvm::append_range(results, parts.values);
-    llvm::append_range(results,
-                       remapPayloadSlots(rewriter, op.getLoc(),
-                                         inputType.getErrorUnion(), parts.slots,
-                                         op.getType().getErrorUnion()));
+    Location loc = op.getLoc();
+    ValueRange input = adaptor.getInput();
+    Value tag;
+    ValueRange slots;
+    ErrorUnionType inputErrors;
+    if (ErrorType error = dyn_cast<ErrorType>(op.getInput().getType())) {
+      tag = createI32(rewriter, loc, getErrorTag(tags, error));
+      slots = input;
+      inputErrors = ErrorUnionType::get(op.getContext(), {error});
+    } else {
+      tag = input.front();
+      slots = input.drop_front();
+      inputErrors = cast<ErrorUnionType>(op.getInput().getType());
+    }
+    SmallVector<Value> results;
+    ErrorUnionType resultErrors;
+    if (ErrorType error = dyn_cast<ErrorType>(op.getType())) {
+      resultErrors = ErrorUnionType::get(op.getContext(), {error});
+    } else {
+      resultErrors = cast<ErrorUnionType>(op.getType());
+      results.push_back(tag);
+    }
+    llvm::append_range(results, remapPayloadSlots(rewriter, loc, inputErrors,
+                                                  slots, resultErrors));
     rewriter.replaceOpWithMultiple(op, {results});
     return success();
   }
+
+  /// The tags of the errors of the module.
+  const ErrorTags &tags;
 };
 
 /// Lowers `arith.select` of a value whose type is lowered to several values
@@ -847,11 +812,10 @@ struct ConvertMonadToCFPass
     });
 
     RewritePatternSet patterns(&getContext());
-    patterns
-        .add<ReturnLowering, MaybeNoneLowering, ErrorMakeLowering,
-             ErrorPayloadLowering, WidenLowering, SelectLowering, CastLowering>(
-            converter, &getContext());
-    patterns.add<EitherLeftLowering, ThrowLowering>(converter, &getContext(),
+    patterns.add<ReturnLowering, MaybeNoneLowering, ErrorThrowLowering,
+                 ErrorPayloadLowering, SelectLowering, CastLowering>(
+        converter, &getContext());
+    patterns.add<EitherLeftLowering, WidenLowering>(converter, &getContext(),
                                                     tags);
     patterns.add<SwitchLowering>(converter, &getContext(), /*benefit=*/2);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,

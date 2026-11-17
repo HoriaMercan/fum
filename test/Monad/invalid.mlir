@@ -258,7 +258,7 @@ monad.error.declare @a(i32)
 
 func.func @error_make_wrong_payload(%value: i64) {
   // expected-error @below {{failed to verify that payload types match the payload types of the result}}
-  %error = "monad.error.make"(%value) : (i64) -> !monad.error<@a, i32>
+  %error = "monad.error.throw"(%value) : (i64) -> !monad.error<@a, i32>
   return
 }
 
@@ -283,36 +283,23 @@ func.func @either_branch_wrong_left(%input: !monad.either<i32, f32>) {
 
 // -----
 
+monad.error.declare @a
 monad.error.declare @c
-monad.error.declare @a
 
-func.func @throw_non_member() {
-  %error = monad.error.make : !monad.error<@c>
-  // expected-error @below {{expects '!monad.error<@c>' to be an error of '!monad.error_union<{!monad.error<@a>}>'}}
-  %thrown = monad.error.throw %error : !monad.error<@c> -> !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
+func.func @widen_non_member(%error: !monad.error<@c>) {
+  // expected-error @below {{operand type '!monad.error<@c>' and result type '!monad.error_union<{!monad.error<@a>}>' are cast incompatible}}
+  %widened = monad.error.widen %error : !monad.error<@c> to !monad.error_union<{!monad.error<@a>}>
   return
 }
 
 // -----
 
+monad.error.declare @a
 monad.error.declare @b
-monad.error.declare @a
 
-func.func @throw_other_single_error() {
-  %error = monad.error.make : !monad.error<@b>
-  // expected-error @below {{expects '!monad.error<@b>' to be an error of '!monad.error<@a>'}}
-  %thrown = monad.error.throw %error : !monad.error<@b> -> !monad.either<!monad.error<@a>, i32>
-  return
-}
-
-// -----
-
-monad.error.declare @a
-
-func.func @throw_into_general_either() {
-  %error = monad.error.make : !monad.error<@a>
-  // expected-error @below {{expects the left type of the result to be an error or an error union}}
-  %thrown = monad.error.throw %error : !monad.error<@a> -> !monad.either<i32, none>
+func.func @widen_to_fewer_errors(%errors: !monad.error_union<{!monad.error<@a>, !monad.error<@b>}>) {
+  // expected-error @below {{operand type '!monad.error_union<{!monad.error<@a>, !monad.error<@b>}>' and result type '!monad.error<@a>' are cast incompatible}}
+  %widened = monad.error.widen %errors : !monad.error_union<{!monad.error<@a>, !monad.error<@b>}> to !monad.error<@a>
   return
 }
 
@@ -320,21 +307,9 @@ func.func @throw_into_general_either() {
 
 monad.error.declare @a(i32)
 
-func.func @throw_other_payload(%value: i32) {
-  %error = monad.error.make %value : !monad.error<@a, i32>
-  // expected-error @below {{to be an error of}}
-  %thrown = monad.error.throw %error : !monad.error<@a, i32> -> !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
-  return
-}
-
-// -----
-
-monad.error.declare @a
-monad.error.declare @b
-
-func.func @widen_to_smaller(%input: !monad.either<!monad.error_union<{!monad.error<@a>, !monad.error<@b>}>, i32>) {
-  // expected-error @below {{operand type}}
-  %widened = monad.error.widen %input : !monad.either<!monad.error_union<{!monad.error<@a>, !monad.error<@b>}>, i32> to !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
+func.func @widen_other_payload(%error: !monad.error<@a, i32>) {
+  // expected-error @below {{cast incompatible}}
+  %widened = monad.error.widen %error : !monad.error<@a, i32> to !monad.error_union<{!monad.error<@a>}>
   return
 }
 
@@ -342,9 +317,9 @@ func.func @widen_to_smaller(%input: !monad.either<!monad.error_union<{!monad.err
 
 monad.error.declare @a
 
-func.func @widen_other_values(%input: !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>) {
-  // expected-error @below {{operand type}}
-  %widened = monad.error.widen %input : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32> to !monad.either<!monad.error_union<{!monad.error<@a>}>, i64>
+func.func @widen_either(%input: !monad.either<!monad.error<@a>, i32>) {
+  // expected-error @below {{operand #0 must be Named error type or Union of named error types}}
+  %widened = monad.error.widen %input : !monad.either<!monad.error<@a>, i32> to !monad.either<!monad.error<@a>, i32>
   return
 }
 
@@ -402,12 +377,14 @@ func.func @catch_ok_wrong_arguments(%input: !monad.either<!monad.error_union<{!m
     // expected-error @below {{expects the ok successor to take arguments of types ('i32')}}
     monad.error.catch %input, ^ok [!monad.error<@b> -> ^handler] : !monad.either<!monad.error_union<{!monad.error<@a>, !monad.error<@b>}>, i32>
   ^ok(%value: i64):
-    %error = monad.error.make : !monad.error<@a>
-    %thrown = monad.error.throw %error : !monad.error<@a> -> !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
+    %error = monad.error.throw : !monad.error<@a>
+    %thrown_left = monad.error.widen %error : !monad.error<@a> to !monad.error_union<{!monad.error<@a>}>
+    %thrown = monad.either.left %thrown_left : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
     monad.yield %thrown : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
   ^handler(%caught: !monad.error<@b>):
-    %error2 = monad.error.make : !monad.error<@a>
-    %thrown2 = monad.error.throw %error2 : !monad.error<@a> -> !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
+    %error2 = monad.error.throw : !monad.error<@a>
+    %thrown2_left = monad.error.widen %error2 : !monad.error<@a> to !monad.error_union<{!monad.error<@a>}>
+    %thrown2 = monad.either.left %thrown2_left : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
     monad.yield %thrown2 : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
   }
   return
@@ -609,7 +586,7 @@ func.func @switch_non_member(%error: !monad.error_union<{!monad.error<@a>}>) {
 
 func.func @undeclared_error() {
   // expected-error @below {{expects @missing to reference a declared error}}
-  %error = monad.error.make : !monad.error<@missing>
+  %error = monad.error.throw : !monad.error<@missing>
   return
 }
 
@@ -619,7 +596,7 @@ monad.error.declare @a(i32)
 
 func.func @payload_other_than_declared(%value: i64) {
   // expected-error @below {{expects the payload types of '!monad.error<@a, i64>' to be the payload types declared by @a}}
-  %error = monad.error.make %value : !monad.error<@a, i64>
+  %error = monad.error.throw %value : !monad.error<@a, i64>
   return
 }
 
@@ -714,16 +691,5 @@ func.func @either_catch_outside_do(%input: !monad.either<i32, f32>) {
   // expected-error @below {{expects parent op 'monad.do'}}
   monad.either.catch %input, left ^left : !monad.either<i32, f32>
 ^left(%l: i32):
-  return
-}
-
-// -----
-
-monad.error.declare @a
-monad.error.declare @b
-
-func.func @throw_union_not_contained(%errors: !monad.error_union<{!monad.error<@a>, !monad.error<@b>}>) {
-  // expected-error @below {{expects '!monad.error_union<{!monad.error<@a>, !monad.error<@b>}>' to be an error of '!monad.error<@a>'}}
-  %thrown = monad.error.throw %errors : !monad.error_union<{!monad.error<@a>, !monad.error<@b>}> -> !monad.either<!monad.error<@a>, i32>
   return
 }

@@ -251,7 +251,6 @@ MONAD_VERIFY_ERROR_SYMBOLS(MonadBindOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadYieldOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadMaybeNoneOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorDeclareOp)
-MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorMakeOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorPayloadOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadErrorSwitchOp)
 MONAD_VERIFY_ERROR_SYMBOLS(MonadEitherLeftOp)
@@ -524,27 +523,6 @@ SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadErrorThrowOp
-//===----------------------------------------------------------------------===//
-
-/// Verifies that the error is an error of the left type of the result.
-LogicalResult MonadErrorThrowOp::verify() {
-  ErrorUnionType errors = getResult().getType().getErrorUnion();
-  if (!errors)
-    return emitOpError() << "expects the left type of the result to be an "
-                            "error or an error union";
-  Type errorType = getError().getType();
-  ErrorUnionType thrown =
-      isa<ErrorType>(errorType)
-          ? ErrorUnionType::get(getContext(), {cast<ErrorType>(errorType)})
-          : cast<ErrorUnionType>(errorType);
-  if (!thrown.isSubsetOf(errors))
-    return emitOpError() << "expects " << errorType << " to be an error of "
-                         << getResult().getType().getLeftType();
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
 // MonadErrorCatchOp
 //===----------------------------------------------------------------------===//
 
@@ -659,17 +637,20 @@ SuccessorOperands MonadErrorCatchOp::getSuccessorOperands(unsigned index) {
 // MonadErrorWidenOp
 //===----------------------------------------------------------------------===//
 
-/// Returns whether the input and the result are either types with the same
-/// value types whose left types are error unions, the first a subset of the
-/// second.
+/// Returns the errors of `type`, an error or an error union, as a union, or
+/// null for any other type.
+static ErrorUnionType getErrors(Type type) {
+  if (ErrorType error = dyn_cast<ErrorType>(type))
+    return ErrorUnionType::get(type.getContext(), {error});
+  return dyn_cast<ErrorUnionType>(type);
+}
+
+/// Returns whether the input and the result are errors or error unions, the
+/// errors of the input being errors of the result.
 bool MonadErrorWidenOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   if (inputs.size() != 1 || outputs.size() != 1)
     return false;
-  EitherType input = dyn_cast<EitherType>(inputs.front());
-  EitherType output = dyn_cast<EitherType>(outputs.front());
-  if (!input || !output || input.getValueTypes() != output.getValueTypes())
-    return false;
-  ErrorUnionType inputErrors = input.getErrorUnion();
-  ErrorUnionType outputErrors = output.getErrorUnion();
-  return inputErrors && outputErrors && inputErrors.isSubsetOf(outputErrors);
+  ErrorUnionType input = getErrors(inputs.front());
+  ErrorUnionType output = getErrors(outputs.front());
+  return input && output && input.isSubsetOf(output);
 }

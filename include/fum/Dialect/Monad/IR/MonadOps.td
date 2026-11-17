@@ -170,18 +170,21 @@ def MonadErrorDeclareOp : Monad_Op<"error.declare", [
   let hasVerifier = 1;
 }
 
-def MonadErrorMakeOp : Monad_Op<"error.make", [
+def MonadErrorThrowOp : Monad_Op<"error.throw", [
     Pure,
     RangedTypesMatchWith<"payload types match the payload types of the result",
                          "result", "payload",
                          "::llvm::cast<::mlir::monad::ErrorType>($_self).getPayloadTypes()">]> {
   let summary = "Creates an error from its payload";
   let description = [{
-    Creates the error of the result type carrying the given payload values.
+    Creates the error of the result type, an exception value carrying the
+    given payload values. The error is a plain value: a computation fails
+    with it once `monad.either.left` puts it, or a union holding it, on the
+    left of an either value that is bound or caught.
 
     ```mlir
-    %e = monad.error.make : !monad.error<@overflow>
-    %f = monad.error.make %i, %n : !monad.error<@out_of_bounds, index, index>
+    %e = monad.error.throw : !monad.error<@overflow>
+    %f = monad.error.throw %i, %n : !monad.error<@out_of_bounds, index, index>
     ```
   }];
   let arguments = (ins Variadic<AnyType>:$payload);
@@ -340,26 +343,6 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
 // Exception operations: either whose left type is an error or an error union
 //===----------------------------------------------------------------------===//
 
-def MonadErrorThrowOp : Monad_Op<"error.throw", [Pure]> {
-  let summary = "Creates an either value that holds an error";
-  let description = [{
-    Creates the left either value holding the error `error`, an error or an
-    error union; a union throws the error it holds again. Every error of
-    `error` must be an error of the left type of the result.
-
-    ```mlir
-    %m = monad.error.throw %e : !monad.error<@overflow>
-        -> !monad.either<!monad.error<@overflow>, i32>
-    ```
-  }];
-  let arguments = (ins AnyTypeOf<[MonadErrorType, MonadErrorUnionType]>:$error);
-  let results = (outs MonadEitherType:$result);
-  let assemblyFormat = [{
-    $error attr-dict `:` qualified(type($error)) `->` qualified(type($result))
-  }];
-  let hasVerifier = 1;
-}
-
 def MonadErrorCatchOp : Monad_Op<"error.catch", [
     Terminator,
     HasParent<"MonadDoOp">,
@@ -407,21 +390,19 @@ def MonadErrorCatchOp : Monad_Op<"error.catch", [
 def MonadErrorWidenOp : Monad_Op<"error.widen", [
     Pure,
     DeclareOpInterfaceMethods<CastOpInterface>]> {
-  let summary = "Widens the errors of an either value";
+  let summary = "Converts an error or an error union to a larger union";
   let description = [{
-    Converts an either value whose left type is an error or an error union
-    to an either type with the same value types and more errors. The errors
-    of the input must be errors of the left type of the result.
+    Converts an error or an error union to an error union that holds the
+    same error, and whose errors include those of the input. The result may
+    also be a single error when the input holds only that error.
 
     ```mlir
-    %w = monad.error.widen %m
-        : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
-        to !monad.either<!monad.error_union<{!monad.error<@a>,
-                                             !monad.error<@b>}>, i32>
+    %u = monad.error.widen %e : !monad.error<@a>
+        to !monad.error_union<{!monad.error<@a>, !monad.error<@b>}>
     ```
   }];
-  let arguments = (ins MonadEitherType:$input);
-  let results = (outs MonadEitherType:$result);
+  let arguments = (ins AnyTypeOf<[MonadErrorType, MonadErrorUnionType]>:$input);
+  let results = (outs AnyTypeOf<[MonadErrorType, MonadErrorUnionType]>:$result);
   let assemblyFormat = [{
     $input attr-dict `:` qualified(type($input)) `to` qualified(type($result))
   }];
