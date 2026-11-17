@@ -1,4 +1,4 @@
-// RUN: fum-opt %s --convert-monad-to-cf | FileCheck %s
+// RUN: fum-opt %s --monad-check-may-throw --convert-monad-to-cf | FileCheck %s
 
 // The examples of the value-or-exception monad lowered to cf, arith and ub.
 // `run-lowered.sh` at the root of the repository executes @main.

@@ -1,4 +1,4 @@
-// RUN: fum-opt %s | fum-opt | FileCheck %s
+// RUN: fum-opt %s --monad-check-may-throw | fum-opt | FileCheck %s
 
 // Tile, then fuse, with the failures(suppress) semantics of the Transform
 // dialect: a silenceable failure of either step is suppressed, and any other

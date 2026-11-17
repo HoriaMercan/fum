@@ -37,4 +37,39 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
   ];
 }
 
+def CheckMayThrowPass : Pass<"monad-check-may-throw", "::mlir::ModuleOp"> {
+  let summary = "Check that functions list the exceptions they may throw";
+  let description = [{
+    Checks that the `monad.may_throw` attribute of every function with a body
+    lists every exception kind that the results of the function may hold.
+    Functions without the attribute are not checked.
+
+    The kinds of a value are those of the `monad.exception.make` operations
+    whose exceptions reach it: through `monad.throw`, `arith.select`,
+    `monad.do`, the binds and catches that let a failure out of a
+    `monad.do`, and the default case of `monad.catch`, which receives the
+    kinds that no case lists. A call contributes the `monad.may_throw` of its
+    callee, or, if the callee has none, the kinds computed from the body of
+    the callee. Any other source, such as a function argument or a call to an
+    external function without `monad.may_throw`, may hold any kind, which
+    fails the check of an annotated function.
+
+    ```mlir
+    // Accepted: div_by_zero is caught, so only overflow may be thrown.
+    func.func @half_ratio(%a: i32, %b: i32) -> !monad.value_or_exception<i32>
+        attributes {monad.may_throw = [@overflow]} {
+      %result = monad.do : !monad.value_or_exception<i32> {
+        %ratio = func.call @safe_div(%a, %b)
+            : (i32, i32) -> !monad.value_or_exception<i32>
+        monad.catch %ratio [@div_by_zero -> ^recover]
+            : !monad.value_or_exception<i32>
+      ^recover:
+        ...
+      }
+      return %result : !monad.value_or_exception<i32>
+    }
+    ```
+  }];
+}
+
 #endif // MONAD_PASSES

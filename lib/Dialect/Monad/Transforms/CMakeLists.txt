@@ -1,4 +1,5 @@
 add_mlir_dialect_library(MLIRMonadTransforms
+  CheckMayThrow.cpp
   ConvertMonadToCF.cpp
 
   ADDITIONAL_HEADER_DIRS
