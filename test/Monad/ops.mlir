@@ -96,18 +96,16 @@ func.func private @error_types(
     !monad.error_union<{!monad.error<"a">, !monad.error<"b">}>)
 
 // Round-trip the value-or-error type with one, several, no, and nested value
-// types, and with one, several, and no errors.
+// types, and with one and several errors.
 // CHECK-LABEL: func.func private @value_or_error_types
 // CHECK-SAME: !monad.value_or_error<[i32] throws {!error_overflow}>
 // CHECK-SAME: !monad.value_or_error<[i8, i32] throws {!error_a, !error_overflow}>
 // CHECK-SAME: !monad.value_or_error<[] throws {!error_overflow}>
-// CHECK-SAME: !monad.value_or_error<[i32] throws {}>
 // CHECK-SAME: !monad.value_or_error<[!monad.maybe<i32>] throws {!error_silenceable}>
 func.func private @value_or_error_types(
     !monad.value_or_error<[i32] throws {!monad.error<"overflow">}>,
     !monad.value_or_error<[i8, i32] throws {!monad.error<"a">, !monad.error<"overflow">}>,
     !monad.value_or_error<[] throws {!monad.error<"overflow">}>,
-    !monad.value_or_error<[i32] throws {}>,
     !monad.value_or_error<[!monad.maybe<i32>] throws {!monad.error<"silenceable", i32>}>)
 
 // The errors are sets: they are printed sorted by name, whatever their order

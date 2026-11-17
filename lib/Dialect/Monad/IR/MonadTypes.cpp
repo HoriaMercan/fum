@@ -48,10 +48,13 @@ static SmallVector<ErrorType> sortErrors(ArrayRef<ErrorType> errors) {
   return sorted;
 }
 
-/// Verifies that the errors are sorted by name and have distinct names.
+/// Verifies that there is at least one error, that the errors are sorted by
+/// name, and that their names are distinct.
 static LogicalResult
 verifyErrorSet(function_ref<InFlightDiagnostic()> emitError,
                ArrayRef<ErrorType> errors) {
+  if (errors.empty())
+    return emitError() << "expects at least one error";
   for (size_t index = 1, size = errors.size(); index < size; ++index)
     if (errors[index - 1].getName() >= errors[index].getName())
       return emitError()
@@ -60,8 +63,9 @@ verifyErrorSet(function_ref<InFlightDiagnostic()> emitError,
   return success();
 }
 
-/// Parses a possibly empty set of error types in braces, in any order, rejects
-/// errors with the same name, and sorts the errors by name.
+/// Parses a set of error types in braces, in any order, rejects errors with
+/// the same name, and sorts the errors by name. The verifier rejects an empty
+/// set.
 static ParseResult parseErrorSet(AsmParser &parser,
                                  SmallVector<ErrorType> &errors) {
   if (parser.parseCommaSeparatedList(

@@ -88,9 +88,10 @@ def MonadValueOrErrorType : Monad_Type<"ValueOrError", "value_or_error",
     A value of type `!monad.value_or_error<[T1, ..., Tn] throws {E1, ..., Em}>`
     is either a success carrying one value of each type `T1`, ..., `Tn`, or a
     failure carrying exactly one error of the error types `E1`, ..., `Em`. The
-    value types are an ordered list and the errors a set of `!monad.error`
-    types with distinct names; both may be empty. The errors are kept sorted by
-    name, and the parser accepts them in any order.
+    value types are an ordered list, which may be empty. The errors are a
+    non-empty set of `!monad.error` types with distinct names: a computation
+    that cannot fail is not of this type. The errors are kept sorted by name,
+    and the parser accepts them in any order.
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.

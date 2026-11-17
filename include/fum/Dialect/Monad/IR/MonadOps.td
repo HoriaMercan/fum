@@ -216,8 +216,10 @@ def MonadWidenOp : Monad_Op<"widen", [
     types and a superset of its errors.
 
     ```mlir
-    %w = monad.widen %m : !monad.value_or_error<[i32] throws {}>
-        to !monad.value_or_error<[i32] throws {!monad.error<"overflow">}>
+    %w = monad.widen %m
+        : !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">}>
+        to !monad.value_or_error<[i32] throws {!monad.error<"div_by_zero">,
+                                               !monad.error<"overflow">}>
     ```
   }];
   let arguments = (ins MonadValueOrErrorType:$input);
