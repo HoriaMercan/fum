@@ -170,25 +170,25 @@ func.func @either_bind(%input: !monad.either<!monad.error_union<{!monad.error<"d
 
 // Throw an error and widen the error union.
 // CHECK-LABEL: func.func @throw_and_widen
-// CHECK: %[[THROWN:.+]] = monad.throw %{{.+}} : ![[OVERFLOW]] -> !monad.either<!errors_overflow, i32>
-// CHECK: monad.widen %[[THROWN]] : !monad.either<!errors_overflow, i32> to !monad.either<![[ARITH]], i32>
+// CHECK: %[[THROWN:.+]] = monad.either.throw %{{.+}} : ![[OVERFLOW]] -> !monad.either<!errors_overflow, i32>
+// CHECK: monad.either.widen %[[THROWN]] : !monad.either<!errors_overflow, i32> to !monad.either<![[ARITH]], i32>
 func.func @throw_and_widen() -> !monad.either<!monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>, i32> {
   %error = monad.error.make : !monad.error<"overflow">
-  %thrown = monad.throw %error : !monad.error<"overflow"> -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
-  %widened = monad.widen %thrown : !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
+  %thrown = monad.either.throw %error : !monad.error<"overflow"> -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
+  %widened = monad.either.widen %thrown : !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
       to !monad.either<!monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>, i32>
   return %widened : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>, i32>
 }
 
 // Catch one error with an ok successor; the other error leaves the do.
 // CHECK-LABEL: func.func @catch_with_ok
-// CHECK: monad.catch %{{.+}}, ^[[OK:.+]] [![[DIV]] -> ^[[RECOVER:.+]]] : !monad.either<![[ARITH]], i32>
+// CHECK: monad.either.catch %{{.+}}, ^[[OK:.+]] [![[DIV]] -> ^[[RECOVER:.+]]] : !monad.either<![[ARITH]], i32>
 // CHECK: ^[[OK]](%{{.+}}: i32):
 // CHECK: ^[[RECOVER]](%{{.+}}: ![[DIV]]):
 func.func @catch_with_ok(%input: !monad.either<!monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>, i32>)
     -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32> {
   %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32> {
-    monad.catch %input, ^ok [!monad.error<"div_by_zero"> -> ^recover]
+    monad.either.catch %input, ^ok [!monad.error<"div_by_zero"> -> ^recover]
         : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>, i32>
   ^ok(%value: i32):
     %wrapped = monad.return %value : !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
@@ -205,15 +205,15 @@ func.func @catch_with_ok(%input: !monad.either<!monad.error_union<{!monad.error<
 // case and a single-error case reach the same handler block, its unique
 // predecessor.
 // CHECK-LABEL: func.func @catch_without_ok
-// CHECK: monad.catch %{{.+}} [![[ARITH]] -> ^[[HANDLER:.+]], !error_payload -> ^[[PAYLOAD:.+]]] : !monad.either<!errors_div_by_zero_other_overflow_payload, i32>
+// CHECK: monad.either.catch %{{.+}} [![[ARITH]] -> ^[[HANDLER:.+]], !error_payload -> ^[[PAYLOAD:.+]]] : !monad.either<!errors_div_by_zero_other_overflow_payload, i32>
 // CHECK: ^[[HANDLER]](%{{.+}}: ![[ARITH]]):
 // CHECK: ^[[PAYLOAD]](%{{.+}}: !error_payload):
 // CHECK: monad.error.payload
 func.func @catch_without_ok(%input: !monad.either<!monad.error_union<{!monad.error<"payload", i32>, !monad.error<"overflow">, !monad.error<"div_by_zero">, !monad.error<"other">}>, i32>)
     -> !monad.either<!monad.error_union<{!monad.error<"payload", i32>, !monad.error<"overflow">, !monad.error<"div_by_zero">, !monad.error<"other">}>, i32> {
   %result = monad.do : !monad.either<!monad.error_union<{!monad.error<"payload", i32>, !monad.error<"overflow">, !monad.error<"div_by_zero">, !monad.error<"other">}>, i32> {
-    monad.catch %input [!monad.error_union<{!monad.error<"overflow">, !monad.error<"div_by_zero">}> -> ^handler,
-                        !monad.error<"payload", i32> -> ^payload]
+    monad.either.catch %input [!monad.error_union<{!monad.error<"overflow">, !monad.error<"div_by_zero">}> -> ^handler,
+                               !monad.error<"payload", i32> -> ^payload]
         : !monad.either<!monad.error_union<{!monad.error<"payload", i32>, !monad.error<"overflow">, !monad.error<"div_by_zero">, !monad.error<"other">}>, i32>
   ^handler(%error: !monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>):
     %zero = arith.constant 0 : i32

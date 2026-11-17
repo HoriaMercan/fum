@@ -11,7 +11,7 @@
 // 1. Control flow. Every `monad.do` is inlined into the enclosing region,
 //    outer first, like the `scf.execute_region` lowering: the region blocks
 //    are moved before a new exit block whose argument replaces the result.
-//    The terminators `monad.yield`, `monad.bind`, `monad.catch`, and
+//    The terminators `monad.yield`, `monad.bind`, `monad.either.catch`, and
 //    `monad.either.branch` become `cf` branches. Their operands are still
 //    monadic values: the lowered values are read from and packed into
 //    monadic values with `builtin.unrealized_conversion_cast`.
@@ -296,9 +296,10 @@ static void lowerBind(MonadBindOp bind, Block *exit, Type doType) {
   bind.erase();
 }
 
-/// Lowers `monad.catch` in a `monad.do` producing `doType` and ending in
+/// Lowers `monad.either.catch` in a `monad.do` producing `doType` and ending in
 /// `exit` to one `cf.switch` on the tag.
-static void lowerCatch(MonadCatchOp catchOp, Block *exit, EitherType doType) {
+static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
+                       EitherType doType) {
   OpBuilder builder(catchOp);
   Location loc = catchOp.getLoc();
   EitherType inputType = catchOp.getInput().getType();
@@ -406,7 +407,8 @@ static void lowerDo(MonadDoOp doOp) {
       yield.erase();
     } else if (MonadBindOp bind = dyn_cast<MonadBindOp>(terminator)) {
       lowerBind(bind, exit, doType);
-    } else if (MonadCatchOp catchOp = dyn_cast<MonadCatchOp>(terminator)) {
+    } else if (MonadEitherCatchOp catchOp =
+                   dyn_cast<MonadEitherCatchOp>(terminator)) {
       lowerCatch(catchOp, exit, cast<EitherType>(doType));
     }
   }
@@ -503,14 +505,14 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
   }
 };
 
-/// Lowers `monad.throw` to the tag of the error, poison values, and the
+/// Lowers `monad.either.throw` to the tag of the error, poison values, and the
 /// payload in the slots of the error.
-struct ThrowLowering : public OpConversionPattern<MonadThrowOp> {
+struct ThrowLowering : public OpConversionPattern<MonadEitherThrowOp> {
   using OpConversionPattern::OpConversionPattern;
 
   /// Builds the tag, poison values, and the payload slots.
   LogicalResult
-  matchAndRewrite(MonadThrowOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(MonadEitherThrowOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     EitherType type = op.getType();
@@ -559,14 +561,14 @@ struct ErrorPayloadLowering : public OpConversionPattern<MonadErrorPayloadOp> {
   }
 };
 
-/// Lowers `monad.widen` by moving the payload slots to those of the larger
-/// union.
-struct WidenLowering : public OpConversionPattern<MonadWidenOp> {
+/// Lowers `monad.either.widen` by moving the payload slots to those of the
+/// larger union.
+struct WidenLowering : public OpConversionPattern<MonadEitherWidenOp> {
   using OpConversionPattern::OpConversionPattern;
 
   /// Keeps the tag and the values and remaps the payload slots.
   LogicalResult
-  matchAndRewrite(MonadWidenOp op, OneToNOpAdaptor adaptor,
+  matchAndRewrite(MonadEitherWidenOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     EitherType inputType = op.getInput().getType();
     ThrowingParts parts = splitThrowing(inputType, adaptor.getInput());

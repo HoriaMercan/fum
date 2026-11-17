@@ -37,7 +37,7 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!errors_arith, i32> {
     %zero = arith.constant 0 : i32
     %is_zero = arith.cmpi eq, %b, %zero : i32
     %division_error = monad.error.make : !error_div_by_zero
-    %division_failure = monad.throw %division_error : !error_div_by_zero -> !monad.either<!errors_arith>
+    %division_failure = monad.either.throw %division_error : !error_div_by_zero -> !monad.either<!errors_arith>
     %divisor_check = arith.select %is_zero, %division_failure, %pass : !monad.either<!errors_arith>
     monad.bind %divisor_check, ^divisor_nonzero : !monad.either<!errors_arith>
   ^divisor_nonzero:
@@ -47,7 +47,7 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!errors_arith, i32> {
     %b_is_minus_one = arith.cmpi eq, %b, %minus_one : i32
     %overflows = arith.andi %a_is_int_min, %b_is_minus_one : i1
     %overflow_error = monad.error.make : !error_overflow
-    %overflow_failure = monad.throw %overflow_error : !error_overflow -> !monad.either<!errors_arith>
+    %overflow_failure = monad.either.throw %overflow_error : !error_overflow -> !monad.either<!errors_arith>
     %overflow_check = arith.select %overflows, %overflow_failure, %pass : !monad.either<!errors_arith>
     monad.bind %overflow_check, ^safe : !monad.either<!errors_arith>
   ^safe:
@@ -76,7 +76,7 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.either<!errors_arith, i32> {
 func.func @half_ratio(%a: i32, %b: i32) -> !monad.either<!errors_overflow, i32> {
   %result = monad.do : !monad.either<!errors_overflow, i32> {
     %ratio = func.call @safe_div(%a, %b) : (i32, i32) -> !monad.either<!errors_arith, i32>
-    monad.catch %ratio, ^ok [!error_div_by_zero -> ^recover] : !monad.either<!errors_arith, i32>
+    monad.either.catch %ratio, ^ok [!error_div_by_zero -> ^recover] : !monad.either<!errors_arith, i32>
   ^ok(%quotient: i32):
     %success = monad.return %quotient : !monad.either<!errors_overflow, i32>
     monad.yield %success : !monad.either<!errors_overflow, i32>
@@ -98,7 +98,7 @@ func.func @tile_using_forall(%target: i32) -> !monad.either<!errors_tiling, i32,
   %twenty = arith.constant 20 : i32
   %is_zero = arith.cmpi eq, %target, %zero : i32
   %error = monad.error.make : !error_silenceable
-  %failure = monad.throw %error : !error_silenceable -> !monad.either<!errors_tiling, i32, i32>
+  %failure = monad.either.throw %error : !error_silenceable -> !monad.either<!errors_tiling, i32, i32>
   %tiled_op = arith.addi %target, %ten : i32
   %loop = arith.addi %target, %twenty : i32
   %success = monad.return %tiled_op, %loop : !monad.either<!errors_tiling, i32, i32>
@@ -120,9 +120,9 @@ func.func @fuse_into_containing_op(%producer: i32, %containing: i32)
   %is_definite = arith.cmpi eq, %producer, %two : i32
   %is_silenceable = arith.cmpi eq, %containing, %one : i32
   %definite_error = monad.error.make : !error_definite
-  %definite = monad.throw %definite_error : !error_definite -> !monad.either<!errors_fusion, i32, i32>
+  %definite = monad.either.throw %definite_error : !error_definite -> !monad.either<!errors_fusion, i32, i32>
   %silenceable_error = monad.error.make : !error_silenceable
-  %silenceable = monad.throw %silenceable_error : !error_silenceable -> !monad.either<!errors_fusion, i32, i32>
+  %silenceable = monad.either.throw %silenceable_error : !error_silenceable -> !monad.either<!errors_fusion, i32, i32>
   %fused_op = arith.addi %producer, %hundred : i32
   %new_loop = arith.addi %containing, %two_hundred : i32
   %success = monad.return %fused_op, %new_loop : !monad.either<!errors_fusion, i32, i32>
@@ -149,7 +149,7 @@ func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !monad.either<!errors_
   %result = monad.do : !monad.either<!errors_definite, i32, i32> {
     %tiled_or_untiled = monad.do : !monad.either<!errors_definite, i32, i32> {
       %tiling = func.call @tile_using_forall(%matmul) : (i32) -> !monad.either<!errors_tiling, i32, i32>
-      monad.catch %tiling, ^tiled [!error_silenceable -> ^tiling_suppressed] : !monad.either<!errors_tiling, i32, i32>
+      monad.either.catch %tiling, ^tiled [!error_silenceable -> ^tiling_suppressed] : !monad.either<!errors_tiling, i32, i32>
     ^tiled(%tiled_op: i32, %tiled_loop: i32):
       %tiled_pair = monad.return %tiled_op, %tiled_loop : !monad.either<!errors_definite, i32, i32>
       monad.yield %tiled_pair : !monad.either<!errors_definite, i32, i32>
@@ -161,7 +161,7 @@ func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !monad.either<!errors_
   ^after_tiling(%tiled_or_matmul: i32, %loop: i32):
     %fused_or_unfused = monad.do : !monad.either<!errors_definite, i32, i32> {
       %fusion = func.call @fuse_into_containing_op(%producer, %loop) : (i32, i32) -> !monad.either<!errors_fusion, i32, i32>
-      monad.catch %fusion, ^fused [!error_silenceable -> ^fusion_suppressed] : !monad.either<!errors_fusion, i32, i32>
+      monad.either.catch %fusion, ^fused [!error_silenceable -> ^fusion_suppressed] : !monad.either<!errors_fusion, i32, i32>
     ^fused(%fused_op: i32, %new_loop: i32):
       %fused_pair = monad.return %fused_op, %new_loop : !monad.either<!errors_definite, i32, i32>
       monad.yield %fused_pair : !monad.either<!errors_definite, i32, i32>
@@ -220,10 +220,10 @@ func.func @clamp_index(%index: i32, %size: i32) -> !monad.either<!errors_bounds,
   %result = monad.do : !monad.either<!errors_bounds, i32> {
     %in_bounds = arith.cmpi slt, %index, %size : i32
     %error = monad.error.make %index, %size : !error_out_of_bounds
-    %failure = monad.throw %error : !error_out_of_bounds -> !monad.either<!errors_bounds, i32>
+    %failure = monad.either.throw %error : !error_out_of_bounds -> !monad.either<!errors_bounds, i32>
     %success = monad.return %index : !monad.either<!errors_bounds, i32>
     %checked = arith.select %in_bounds, %success, %failure : !monad.either<!errors_bounds, i32>
-    monad.catch %checked [!error_out_of_bounds -> ^clamp] : !monad.either<!errors_bounds, i32>
+    monad.either.catch %checked [!error_out_of_bounds -> ^clamp] : !monad.either<!errors_bounds, i32>
   ^clamp(%bounds_error: !error_out_of_bounds):
     %bad_index, %bad_size = monad.error.payload %bounds_error : !error_out_of_bounds
     %one = arith.constant 1 : i32
@@ -253,8 +253,8 @@ func.func @holds(%m: !monad.either<!errors_arith, i32>, %expected: i32) -> i1 {
 // div_by_zero (with %overflow cleared).
 func.func @throws(%m: !monad.either<!errors_arith, i32>, %overflow: i1) -> i1 {
   %caught = monad.do : !monad.either<!no_errors, i1> {
-    monad.catch %m, ^ok [!error_overflow -> ^is_overflow,
-                         !monad.error_union<{!error_div_by_zero}> -> ^is_division]
+    monad.either.catch %m, ^ok [!error_overflow -> ^is_overflow,
+                                !monad.error_union<{!error_div_by_zero}> -> ^is_division]
         : !monad.either<!errors_arith, i32>
   ^ok(%value: i32):
     %false = arith.constant false
@@ -336,13 +336,13 @@ func.func @main() -> i32 {
   // 4-6: half_ratio(7, 2) = 3, half_ratio(7, 0) = 0,
   // half_ratio(INT_MIN, -1) = overflow, widened to reuse the checks.
   %h4 = func.call @half_ratio(%seven, %two) : (i32, i32) -> !monad.either<!errors_overflow, i32>
-  %r4 = monad.widen %h4 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %r4 = monad.either.widen %h4 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
   %ok4 = func.call @holds(%r4, %three) : (!monad.either<!errors_arith, i32>, i32) -> i1
   %h5 = func.call @half_ratio(%seven, %zero) : (i32, i32) -> !monad.either<!errors_overflow, i32>
-  %r5 = monad.widen %h5 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %r5 = monad.either.widen %h5 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
   %ok5 = func.call @holds(%r5, %zero) : (!monad.either<!errors_arith, i32>, i32) -> i1
   %h6 = func.call @half_ratio(%int_min, %minus_one) : (i32, i32) -> !monad.either<!errors_overflow, i32>
-  %r6 = monad.widen %h6 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
+  %r6 = monad.either.widen %h6 : !monad.either<!errors_overflow, i32> to !monad.either<!errors_arith, i32>
   %ok6 = func.call @throws(%r6, %true) : (!monad.either<!errors_arith, i32>, i1) -> i1
 
   // 7-10: tile_and_fuse(5, 6) = (106, 225), tile_and_fuse(0, 6) = (106, 200),

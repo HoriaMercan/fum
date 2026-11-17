@@ -115,11 +115,11 @@ SuccessorOperands MonadEitherBranchOp::getSuccessorOperands(unsigned index) {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadThrowOp
+// MonadEitherThrowOp
 //===----------------------------------------------------------------------===//
 
 /// Verifies that the error is a member of the error union of the result.
-LogicalResult MonadThrowOp::verify() {
+LogicalResult MonadEitherThrowOp::verify() {
   ErrorUnionType errors = getResult().getType().getErrorUnion();
   if (!errors)
     return emitOpError() << "expects the left type of the result to be an "
@@ -131,24 +131,25 @@ LogicalResult MonadThrowOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadCatchOp
+// MonadEitherCatchOp
 //===----------------------------------------------------------------------===//
 
 /// Returns the successor of a right, or null if a right ends the enclosing
 /// monad.do.
-Block *MonadCatchOp::getOk() {
+Block *MonadEitherCatchOp::getOk() {
   if (getDests().size() == getCaseTypes().size())
     return nullptr;
   return getDests().front();
 }
 
 /// Returns the handler successors, one per case.
-SuccessorRange MonadCatchOp::getHandlers() {
+SuccessorRange MonadEitherCatchOp::getHandlers() {
   return getDests().drop_front(getDests().size() - getCaseTypes().size());
 }
 
 /// Parses `%m (, ^ok)? [CASE -> ^h, ...] attr-dict : T`.
-ParseResult MonadCatchOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult MonadEitherCatchOp::parse(OpAsmParser &parser,
+                                      OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
   if (parser.parseOperand(input))
     return failure();
@@ -184,7 +185,7 @@ ParseResult MonadCatchOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 /// Prints `%m (, ^ok)? [CASE -> ^h, ...] attr-dict : T`.
-void MonadCatchOp::print(OpAsmPrinter &printer) {
+void MonadEitherCatchOp::print(OpAsmPrinter &printer) {
   printer << " " << getInput();
   if (Block *ok = getOk()) {
     printer << ", ";
@@ -207,7 +208,7 @@ void MonadCatchOp::print(OpAsmPrinter &printer) {
 /// cases are disjoint errors or error groups of the input, each handler takes
 /// one argument of its case type, `^ok` takes the value types, and every error
 /// that is not caught is a member of the error union of the `monad.do`.
-LogicalResult MonadCatchOp::verify() {
+LogicalResult MonadEitherCatchOp::verify() {
   EitherType inputType = getInput().getType();
   ErrorUnionType inputErrors = inputType.getErrorUnion();
   if (!inputErrors)
@@ -267,7 +268,7 @@ LogicalResult MonadCatchOp::verify() {
 /// Returns the operands passed to a successor: none are forwarded, and the
 /// catch produces the values of a right for `^ok` and the error for a
 /// handler.
-SuccessorOperands MonadCatchOp::getSuccessorOperands(unsigned index) {
+SuccessorOperands MonadEitherCatchOp::getSuccessorOperands(unsigned index) {
   assert(index < getDests().size() && "invalid successor index");
   unsigned produced =
       (index == 0 && getOk()) ? getInput().getType().getValueTypes().size() : 1;
@@ -275,13 +276,14 @@ SuccessorOperands MonadCatchOp::getSuccessorOperands(unsigned index) {
 }
 
 //===----------------------------------------------------------------------===//
-// MonadWidenOp
+// MonadEitherWidenOp
 //===----------------------------------------------------------------------===//
 
 /// Returns whether the input and the result are either types with the same
 /// value types whose left types are error unions, the first a subset of the
 /// second.
-bool MonadWidenOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
+bool MonadEitherWidenOp::areCastCompatible(TypeRange inputs,
+                                           TypeRange outputs) {
   if (inputs.size() != 1 || outputs.size() != 1)
     return false;
   EitherType input = dyn_cast<EitherType>(inputs.front());

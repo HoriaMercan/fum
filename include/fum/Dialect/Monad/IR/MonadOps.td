@@ -226,14 +226,14 @@ def MonadEitherBranchOp : Monad_Op<"either.branch", [
 // Exception operations: either whose left type is an error union
 //===----------------------------------------------------------------------===//
 
-def MonadThrowOp : Monad_Op<"throw", [Pure]> {
+def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
   let summary = "Creates an either value that holds an error";
   let description = [{
     Creates the left either value holding the error `error`, which must be a
     member of the error union that is the left type of the result.
 
     ```mlir
-    %m = monad.throw %e : !monad.error<"overflow">
+    %m = monad.either.throw %e : !monad.error<"overflow">
         -> !monad.either<!monad.error_union<{!monad.error<"overflow">}>, i32>
     ```
   }];
@@ -245,7 +245,7 @@ def MonadThrowOp : Monad_Op<"throw", [Pure]> {
   let hasVerifier = 1;
 }
 
-def MonadCatchOp : Monad_Op<"catch", [
+def MonadEitherCatchOp : Monad_Op<"either.catch", [
     Terminator,
     HasParent<"MonadDoOp">,
     DeclareOpInterfaceMethods<BranchOpInterface>]> {
@@ -268,7 +268,7 @@ def MonadCatchOp : Monad_Op<"catch", [
     forwards no operands.
 
     ```mlir
-    monad.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
+    monad.either.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
         : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
                                             !monad.error<"overflow">}>, i32>
     ^ok(%x: i32):
@@ -288,7 +288,7 @@ def MonadCatchOp : Monad_Op<"catch", [
   }];
 }
 
-def MonadWidenOp : Monad_Op<"widen", [
+def MonadEitherWidenOp : Monad_Op<"either.widen", [
     Pure,
     DeclareOpInterfaceMethods<CastOpInterface>]> {
   let summary = "Widens the error union of an either value";
@@ -298,7 +298,7 @@ def MonadWidenOp : Monad_Op<"widen", [
     members of the error union of the result.
 
     ```mlir
-    %w = monad.widen %m
+    %w = monad.either.widen %m
         : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
         to !monad.either<!monad.error_union<{!monad.error<"a">,
                                              !monad.error<"b">}>, i32>

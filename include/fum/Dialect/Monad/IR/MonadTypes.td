@@ -106,7 +106,8 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
     `monad.do` with a left.
 
     When `L` is an `!monad.error_union`, the type describes a computation
-    that may throw: `monad.throw`, `monad.catch`, and `monad.widen` apply.
+    that may throw: `monad.either.throw`, `monad.either.catch`, and
+    `monad.either.widen` apply.
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.
