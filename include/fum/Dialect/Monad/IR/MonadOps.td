@@ -148,17 +148,26 @@ def MonadExceptionDeclareOp : Monad_Op<"exception.declare", [
     Declares the exception kind `@name`, whose exceptions carry one payload
     value of each listed type. The payload list is omitted when it is empty.
 
+    The declarations of a module are the registry of its exception kinds.
+    Each kind has a positive tag that identifies it once lowered: the
+    explicit `tag` if given, which no other declaration of the module may
+    use, and otherwise the next unused tag in the order of the declarations,
+    starting at 1. Explicit tags keep the tags of separately compiled modules
+    in agreement.
+
     ```mlir
     monad.exception.declare @div_by_zero
-    monad.exception.declare @io(i32)
+    monad.exception.declare @io(i32) tag 7
     ```
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeArrayAttr:$payloadTypes,
+                       OptionalAttr<ConfinedAttr<I32Attr, [IntPositive]>>:$tag,
                        OptionalAttr<StrAttr>:$sym_visibility);
   let assemblyFormat = [{
-    $sym_name `` custom<PayloadTypes>($payloadTypes) attr-dict
+    $sym_name `` custom<PayloadTypes>($payloadTypes) (`tag` $tag^)? attr-dict
   }];
+  let hasVerifier = 1;
 }
 
 def MonadExceptionMakeOp : Monad_Op<"exception.make", [

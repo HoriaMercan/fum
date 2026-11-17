@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -132,6 +133,49 @@ lookupExceptionKind(Operation *op, SymbolTableCollection &symbolTable,
     op->emitOpError() << "expects " << kind
                       << " to reference a declared exception";
   return declaration;
+}
+
+/// Verifies that no earlier declaration of the module uses the explicit tag of
+/// this declaration.
+LogicalResult MonadExceptionDeclareOp::verify() {
+  std::optional<uint32_t> tag = getTag();
+  if (!tag)
+    return success();
+  for (Operation &op : *getOperation()->getBlock()) {
+    if (&op == getOperation())
+      break;
+    MonadExceptionDeclareOp other = dyn_cast<MonadExceptionDeclareOp>(op);
+    if (other && other.getTag() == tag)
+      return emitOpError() << "expects a tag that no other exception kind "
+                              "uses, got "
+                           << *tag << ", the tag of " << other.getSymNameAttr();
+  }
+  return success();
+}
+
+/// Returns the tag of every exception kind declared in `module`, by kind
+/// name: the explicit tag of the declaration, or otherwise the next tag that
+/// no explicit tag uses, in the order of the declarations, starting at 1.
+llvm::DenseMap<StringAttr, int32_t>
+mlir::monad::getExceptionTags(ModuleOp module) {
+  llvm::DenseSet<int32_t> explicitTags;
+  for (MonadExceptionDeclareOp declaration :
+       module.getOps<MonadExceptionDeclareOp>())
+    if (std::optional<uint32_t> tag = declaration.getTag())
+      explicitTags.insert(*tag);
+  llvm::DenseMap<StringAttr, int32_t> tags;
+  int32_t next = 1;
+  for (MonadExceptionDeclareOp declaration :
+       module.getOps<MonadExceptionDeclareOp>()) {
+    if (std::optional<uint32_t> tag = declaration.getTag()) {
+      tags[declaration.getSymNameAttr()] = *tag;
+      continue;
+    }
+    while (explicitTags.contains(next))
+      ++next;
+    tags[declaration.getSymNameAttr()] = next++;
+  }
+  return tags;
 }
 
 /// Returns the payload types declared by an exception kind.

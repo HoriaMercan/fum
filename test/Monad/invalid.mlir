@@ -242,6 +242,17 @@ func.func @declare_outside_module() {
 
 // -----
 
+monad.exception.declare @a tag 3
+// expected-error @below {{expects a tag that no other exception kind uses, got 3, the tag of "a"}}
+monad.exception.declare @b tag 3
+
+// -----
+
+// expected-error @below {{attribute 'tag' failed to satisfy constraint}}
+monad.exception.declare @zero tag 0
+
+// -----
+
 func.func @make_undeclared() {
   // expected-error @below {{expects @a to reference a declared exception}}
   %e = monad.exception.make @a

@@ -88,16 +88,17 @@ func.func @do_single_block(%input: !monad.maybe<i32>) -> !monad.maybe<i32> {
   return %result : !monad.maybe<i32>
 }
 
-// Exception kinds used by the value-or-exception tests.
+// Exception kinds used by the value-or-exception tests; @timeout has an
+// explicit tag.
 // CHECK: monad.exception.declare @div_by_zero{{$}}
 // CHECK: monad.exception.declare @overflow{{$}}
 // CHECK: monad.exception.declare @io(i32)
-// CHECK: monad.exception.declare @timeout(i32)
+// CHECK: monad.exception.declare @timeout(i32) tag 7{{$}}
 // CHECK: monad.exception.declare @pair(i1, index)
 monad.exception.declare @div_by_zero
 monad.exception.declare @overflow
 monad.exception.declare @io(i32)
-monad.exception.declare @timeout(i32)
+monad.exception.declare @timeout(i32) tag 7
 monad.exception.declare @pair(i1, index)
 
 // Round-trip the exception types with empty, one, several, and nested value

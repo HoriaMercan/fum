@@ -2,10 +2,14 @@
 
 // The examples of the value-or-exception monad lowered to cf, arith and ub.
 // `run-lowered.sh` at the root of the repository executes @main.
+//
+// The tags follow the declarations: io has the explicit tag 1, so the others
+// take the next unused tags: div_by_zero 2, overflow 3, silenceable_failure 4,
+// and definite_failure 5.
 
 monad.exception.declare @div_by_zero
 monad.exception.declare @overflow
-monad.exception.declare @io(i32)
+monad.exception.declare @io(i32) tag 1
 monad.exception.declare @silenceable_failure
 monad.exception.declare @definite_failure
 
@@ -17,12 +21,12 @@ monad.exception.declare @definite_failure
 // CHECK-LABEL: func.func @safe_div
 // CHECK-SAME: -> (i32, i32, i64)
 // CHECK: %[[PASS_TAG:.+]] = arith.constant 0 : i32
-// CHECK: %[[DIV_TAG:.+]] = arith.constant 1855107791 : i32
+// CHECK: %[[DIV_TAG:.+]] = arith.constant 2 : i32
 // CHECK: %[[CHECK_ZERO:.+]] = arith.select %{{.*}}, %[[DIV_TAG]], %[[PASS_TAG]] : i32
 // CHECK: arith.cmpi eq, %[[CHECK_ZERO]], %{{.*}} : i32
 // CHECK: cf.cond_br %{{.*}}, ^[[NONZERO:.+]], ^[[EXIT:.+]](%[[CHECK_ZERO]], %{{.*}}, %{{.*}} : i32, i32, i64)
 // CHECK: ^[[NONZERO]]:
-// CHECK: arith.constant 425502571 : i32
+// CHECK: arith.constant 3 : i32
 // CHECK: cf.cond_br %{{.*}}, ^[[SAFE:.+]], ^[[EXIT]](
 // CHECK: ^[[SAFE]]:
 // CHECK: arith.divsi
@@ -65,7 +69,7 @@ func.func @safe_div(%a: i32, %b: i32) -> !monad.value_or_exception<i32>
 // CHECK: cf.switch %[[RATIO]]#0 : i32, [
 // CHECK-NEXT: default: ^[[EXIT:.+]](%[[RATIO]]#0, %[[RATIO]]#1, %[[RATIO]]#2 : i32, i32, i64),
 // CHECK-NEXT: 0: ^[[EXIT]](%[[RATIO]]#0, %[[RATIO]]#1, %[[RATIO]]#2 : i32, i32, i64),
-// CHECK-NEXT: 1855107791: ^[[RECOVER:.+]]
+// CHECK-NEXT: 2: ^[[RECOVER:.+]]
 // CHECK-NEXT: ]
 // CHECK: ^[[RECOVER]]:
 // CHECK: cf.br ^[[EXIT]](
@@ -92,7 +96,7 @@ func.func @half_ratio(%a: i32, %b: i32) -> !monad.value_or_exception<i32>
 // CHECK: cf.switch %[[TAG]] : i32, [
 // CHECK-NEXT: default: ^[[OTHER:.+]](%[[TAG]], %[[WORD]] : i32, i64),
 // CHECK-NEXT: 0: ^[[OK:.+]](%[[VALUE]] : i32),
-// CHECK-NEXT: 1110998065: ^[[IO:.+]](%[[CODE]] : i32)
+// CHECK-NEXT: 1: ^[[IO:.+]](%[[CODE]] : i32)
 // CHECK-NEXT: ]
 // CHECK: ^[[OK]](%{{.*}}: i32):
 // CHECK: ^[[IO]](%{{.*}}: i32):
@@ -115,7 +119,7 @@ func.func @payload(%input: !monad.value_or_exception<i32>) -> !monad.value_or_ex
 
 // Making an exception with a payload sign-extends it into the payload word.
 // CHECK-LABEL: func.func @make_payload
-// CHECK: %[[TAG:.+]] = arith.constant 1110998065 : i32
+// CHECK: %[[TAG:.+]] = arith.constant 1 : i32
 // CHECK: %[[WORD:.+]] = arith.extsi %{{.*}} : i32 to i64
 // CHECK: %[[POISON:.+]] = ub.poison : i32
 // CHECK: return %[[TAG]], %[[POISON]], %[[WORD]] : i32, i32, i64
@@ -188,7 +192,7 @@ func.func @fuse_into_containing_op(%producer: i32, %containing: i32)
 // CHECK: cf.switch %{{.*}} : i32, [
 // CHECK-NEXT: default: ^[[TILING_EXIT:.+]](
 // CHECK-NEXT: 0: ^[[TILING_EXIT]](
-// CHECK-NEXT: 1661323397: ^[[TILING_SUPPRESSED:.+]]
+// CHECK-NEXT: 4: ^[[TILING_SUPPRESSED:.+]]
 // CHECK: ^[[TILING_SUPPRESSED]]:
 // CHECK: cf.br ^[[TILING_EXIT]](
 // CHECK: ^[[TILING_EXIT]](
@@ -198,7 +202,7 @@ func.func @fuse_into_containing_op(%producer: i32, %containing: i32)
 // CHECK: cf.switch %{{.*}} : i32, [
 // CHECK-NEXT: default: ^[[FUSION_EXIT:.+]](
 // CHECK-NEXT: 0: ^[[FUSION_EXIT]](
-// CHECK-NEXT: 1661323397: ^[[FUSION_SUPPRESSED:.+]]
+// CHECK-NEXT: 4: ^[[FUSION_SUPPRESSED:.+]]
 // CHECK: ^[[FUSION_SUPPRESSED]]:
 // CHECK: cf.br ^[[FUSION_EXIT]](
 // CHECK: ^[[FUSION_EXIT]](
@@ -237,9 +241,9 @@ func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !monad.value_or_except
 // CHECK-NOT: unrealized_conversion_cast
 func.func @main() -> i32 {
   %success_tag = arith.constant 0 : i32
-  %div_by_zero_tag = arith.constant 1855107791 : i32
-  %overflow_tag = arith.constant 425502571 : i32
-  %definite_tag = arith.constant 1772500520 : i32
+  %div_by_zero_tag = arith.constant 2 : i32
+  %overflow_tag = arith.constant 3 : i32
+  %definite_tag = arith.constant 5 : i32
   %c0 = arith.constant 0 : i32
   %c1 = arith.constant 1 : i32
   %c2 = arith.constant 2 : i32

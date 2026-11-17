@@ -43,16 +43,6 @@ using KindTags = llvm::DenseMap<StringAttr, int32_t>;
 // Representation
 //===----------------------------------------------------------------------===//
 
-/// Returns the 32-bit FNV-1a hash of `name` with the sign bit cleared.
-static int32_t getKindTag(StringRef name) {
-  uint32_t hash = 2166136261u;
-  for (char c : name) {
-    hash ^= static_cast<uint8_t>(c);
-    hash *= 16777619u;
-  }
-  return static_cast<int32_t>(hash & 0x7fffffffu);
-}
-
 /// Returns true if `type` fits the payload word.
 static bool isPayloadWordType(Type type) {
   if (isa<IndexType>(type))
@@ -482,37 +472,25 @@ struct ConvertMonadToCFPass
   void runOnOperation() override;
 
   /// Computes the tags of the exception kinds of the module, and checks that
-  /// they are distinct and that the payloads fit the payload word.
+  /// the payloads fit the payload word.
   LogicalResult computeTags(KindTags &tags);
 };
 
 } // namespace
 
 LogicalResult ConvertMonadToCFPass::computeTags(KindTags &tags) {
-  llvm::DenseMap<int32_t, MonadExceptionDeclareOp> kindsByTag;
-  WalkResult result = getOperation().walk([&](MonadExceptionDeclareOp op) {
+  ModuleOp module = getOperation();
+  for (MonadExceptionDeclareOp op : module.getOps<MonadExceptionDeclareOp>()) {
     ArrayAttr payloadTypes = op.getPayloadTypes();
     if (payloadTypes.size() > 1 ||
         !llvm::all_of(payloadTypes.getAsValueRange<TypeAttr>(),
-                      isPayloadWordType)) {
-      op.emitError() << "cannot lower the payload of " << op.getSymNameAttr()
-                     << ": expects at most one integer of at most 64 bits or "
-                        "index";
-      return WalkResult::interrupt();
-    }
-    int32_t tag = getKindTag(op.getSymName());
-    auto [it, inserted] = kindsByTag.try_emplace(tag, op);
-    if (tag == 0 || !inserted) {
-      op.emitError() << "the tag of exception kind " << op.getSymNameAttr()
-                     << " collides with "
-                     << (tag == 0 ? StringRef("success")
-                                  : it->second.getSymName());
-      return WalkResult::interrupt();
-    }
-    tags[op.getSymNameAttr()] = tag;
-    return WalkResult::advance();
-  });
-  return failure(result.wasInterrupted());
+                      isPayloadWordType))
+      return op.emitError()
+             << "cannot lower the payload of " << op.getSymNameAttr()
+             << ": expects at most one integer of at most 64 bits or index";
+  }
+  tags = getExceptionTags(module);
+  return success();
 }
 
 void ConvertMonadToCFPass::runOnOperation() {

@@ -24,11 +24,10 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
     - `!monad.value_or_exception<T...>` becomes an `i32` tag (0 on success),
       `T...`, and an `i64` payload word.
 
-    The tag of an exception kind is the 32-bit FNV-1a hash of its name, masked
-    to a positive value. The pass fails if two kinds of the module have the
-    same tag, or if a kind has more than one payload value or a payload value
-    other than an integer of at most 64 bits or an index. Unused components
-    are `ub.poison`.
+    The tag of an exception kind is the tag of its declaration in the module,
+    as `monad.exception.declare` describes. The pass fails if a kind has more
+    than one payload value or a payload value other than an integer of at most
+    64 bits or an index. Unused components are `ub.poison`.
   }];
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
