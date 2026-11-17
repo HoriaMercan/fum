@@ -34,7 +34,6 @@
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 
 namespace mlir {
 namespace monad {
@@ -50,16 +49,13 @@ using namespace mlir::monad;
 // Layout of lowered values
 //===----------------------------------------------------------------------===//
 
-/// Returns the tag of the error named `name`: its FNV-1a 32-bit hash, masked
-/// to a positive value so that it differs from the tag 0 of a right.
-static int32_t getErrorTag(StringRef name) {
-  uint32_t hash = 2166136261u;
-  for (char character : name) {
-    hash ^= static_cast<uint8_t>(character);
-    hash *= 16777619u;
-  }
-  hash &= 0x7fffffffu;
-  return hash == 0 ? 1 : static_cast<int32_t>(hash);
+/// The tags of the errors of the module, by error name, from their
+/// declarations; the tag 0 is a right.
+using ErrorTags = llvm::DenseMap<StringAttr, int32_t>;
+
+/// Returns the tag of `error`.
+static int32_t getErrorTag(const ErrorTags &tags, ErrorType error) {
+  return tags.at(error.getName().getAttr());
 }
 
 /// Appends the lowered types of `type` to `results`.
@@ -311,16 +307,17 @@ struct SwitchCases {
 /// `monad.either.catch` or `monad.error_union.switch` on a value of `errors`
 /// lowered to `tag` and `slots`: the case branches to the handler with the
 /// error, or with the group that lists it.
-static void appendCases(OpBuilder &builder, Location loc, ErrorUnionType errors,
-                        Value tag, ValueRange slots, ArrayAttr caseTypes,
-                        SuccessorRange handlers, SwitchCases &cases) {
+static void appendCases(OpBuilder &builder, Location loc, const ErrorTags &tags,
+                        ErrorUnionType errors, Value tag, ValueRange slots,
+                        ArrayAttr caseTypes, SuccessorRange handlers,
+                        SwitchCases &cases) {
   for (auto [caseType, handler] :
        llvm::zip_equal(caseTypes.getAsValueRange<TypeAttr>(), handlers)) {
     if (ErrorType error = dyn_cast<ErrorType>(caseType)) {
       SmallVector<Value> payload =
           remapPayloadSlots(builder, loc, errors, slots,
                             ErrorUnionType::get(builder.getContext(), {error}));
-      cases.values.push_back(getErrorTag(error.getName().getValue()));
+      cases.values.push_back(getErrorTag(tags, error));
       cases.dests.push_back(handler);
       cases.operands.push_back({pack(builder, loc, error, payload)});
       continue;
@@ -331,7 +328,7 @@ static void appendCases(OpBuilder &builder, Location loc, ErrorUnionType errors,
                        remapPayloadSlots(builder, loc, errors, slots, group));
     Value groupValue = pack(builder, loc, group, groupValues);
     for (ErrorType error : group.getErrors()) {
-      cases.values.push_back(getErrorTag(error.getName().getValue()));
+      cases.values.push_back(getErrorTag(tags, error));
       cases.dests.push_back(handler);
       cases.operands.push_back({groupValue});
     }
@@ -352,7 +349,7 @@ static void createSwitch(OpBuilder &builder, Location loc, Value tag,
 /// Lowers `monad.either.catch` in a `monad.do` producing `doType` and ending in
 /// `exit` to one `cf.switch` on the tag.
 static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
-                       EitherType doType) {
+                       EitherType doType, const ErrorTags &tags) {
   OpBuilder builder(catchOp);
   Location loc = catchOp.getLoc();
   EitherType inputType = catchOp.getInput().getType();
@@ -381,7 +378,7 @@ static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
     cases.operands.push_back({catchOp.getInput()});
   }
 
-  appendCases(builder, loc, inputErrors, parts.tag, parts.slots,
+  appendCases(builder, loc, tags, inputErrors, parts.tag, parts.slots,
               catchOp.getCaseTypes(), catchOp.getHandlers(), cases);
   createSwitch(builder, loc, parts.tag, exit, defaultOperand, cases);
   catchOp.erase();
@@ -389,14 +386,15 @@ static void lowerCatch(MonadEitherCatchOp catchOp, Block *exit,
 
 /// Lowers `monad.error_union.switch` to a `cf.switch` on the tag. The cases
 /// list every member, so the last case is the default successor.
-static void lowerErrorUnionSwitch(MonadErrorUnionSwitchOp switchOp) {
+static void lowerErrorUnionSwitch(MonadErrorUnionSwitchOp switchOp,
+                                  const ErrorTags &tags) {
   OpBuilder builder(switchOp);
   Location loc = switchOp.getLoc();
   ErrorUnionType errors = switchOp.getInput().getType();
   SmallVector<Value> lowered = unpack(builder, loc, switchOp.getInput());
   Value tag = lowered.front();
   SwitchCases cases;
-  appendCases(builder, loc, errors, tag, ValueRange(lowered).drop_front(),
+  appendCases(builder, loc, tags, errors, tag, ValueRange(lowered).drop_front(),
               switchOp.getCaseTypes(), switchOp.getHandlers(), cases);
   Block *defaultDest = cases.dests.pop_back_val();
   SmallVector<Value> defaultOperands = cases.operands.pop_back_val();
@@ -437,7 +435,7 @@ static void lowerEitherBranch(MonadEitherBranchOp branch) {
 
 /// Inlines `doOp` into the enclosing region and lowers the terminators of its
 /// blocks. The blocks of nested `monad.do` operations are left as they are.
-static void lowerDo(MonadDoOp doOp) {
+static void lowerDo(MonadDoOp doOp, const ErrorTags &tags) {
   Location loc = doOp.getLoc();
   Type doType = doOp.getType();
   Block *before = doOp->getBlock();
@@ -456,7 +454,7 @@ static void lowerDo(MonadDoOp doOp) {
       lowerBind(bind, exit, doType);
     } else if (MonadEitherCatchOp catchOp =
                    dyn_cast<MonadEitherCatchOp>(terminator)) {
-      lowerCatch(catchOp, exit, cast<EitherType>(doType));
+      lowerCatch(catchOp, exit, cast<EitherType>(doType), tags);
     }
   }
   exit->getParent()->getBlocks().splice(exit->getIterator(), body.getBlocks());
@@ -525,7 +523,10 @@ struct MaybeNoneLowering : public OpConversionPattern<MonadMaybeNoneOp> {
 
 /// Lowers `monad.either.left` to a set flag, the left value, and poison.
 struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
-  using OpConversionPattern::OpConversionPattern;
+  /// Creates the pattern with the tags of the errors of the module.
+  EitherLeftLowering(const TypeConverter &converter, MLIRContext *context,
+                     const ErrorTags &tags)
+      : OpConversionPattern(converter, context), tags(tags) {}
 
   /// Builds the set flag, the left value, and poison values.
   LogicalResult
@@ -537,8 +538,7 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
     ValueRange left = adaptor.getValue();
     if (ErrorType error = dyn_cast<ErrorType>(type.getLeftType())) {
       // The lowered error is its payload; the tag is the tag of the error.
-      results.push_back(
-          createI32(rewriter, loc, getErrorTag(error.getName().getValue())));
+      results.push_back(createI32(rewriter, loc, getErrorTag(tags, error)));
       llvm::append_range(results,
                          createPoison(rewriter, loc, type.getValueTypes()));
       llvm::append_range(results, left);
@@ -557,12 +557,18 @@ struct EitherLeftLowering : public OpConversionPattern<MonadEitherLeftOp> {
     rewriter.replaceOpWithMultiple(op, {results});
     return success();
   }
+
+  /// The tags of the errors of the module.
+  const ErrorTags &tags;
 };
 
 /// Lowers `monad.either.throw` to the tag of the error, poison values, and the
 /// payload in the slots of the error.
 struct ThrowLowering : public OpConversionPattern<MonadEitherThrowOp> {
-  using OpConversionPattern::OpConversionPattern;
+  /// Creates the pattern with the tags of the errors of the module.
+  ThrowLowering(const TypeConverter &converter, MLIRContext *context,
+                const ErrorTags &tags)
+      : OpConversionPattern(converter, context), tags(tags) {}
 
   /// Builds the tag, poison values, and the payload slots.
   LogicalResult
@@ -572,7 +578,7 @@ struct ThrowLowering : public OpConversionPattern<MonadEitherThrowOp> {
     EitherType type = op.getType();
     ErrorType error = op.getError().getType();
     SmallVector<Value> results{
-        createI32(rewriter, loc, getErrorTag(error.getName().getValue()))};
+        createI32(rewriter, loc, getErrorTag(tags, error))};
     llvm::append_range(results,
                        createPoison(rewriter, loc, type.getValueTypes()));
     llvm::append_range(results,
@@ -581,6 +587,9 @@ struct ThrowLowering : public OpConversionPattern<MonadEitherThrowOp> {
     rewriter.replaceOpWithMultiple(op, {results});
     return success();
   }
+
+  /// The tags of the errors of the module.
+  const ErrorTags &tags;
 };
 
 /// Lowers `monad.error.make` to its payload.
@@ -733,20 +742,21 @@ struct SwitchLowering : public OpConversionPattern<cf::SwitchOp> {
 /// Lowers monadic computations to control flow.
 struct ConvertMonadToCFPass
     : public monad::impl::ConvertMonadToCFPassBase<ConvertMonadToCFPass> {
-  /// Checks the error tags, lowers the control flow, then the types.
+  /// Checks the error declarations, lowers the control flow, then the types.
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (failed(checkErrorTags(module)))
+    if (failed(checkErrorDeclarations(module)))
       return signalPassFailure();
+    ErrorTags tags = getErrorTags(module);
 
     SmallVector<MonadDoOp> doOps;
     module.walk<WalkOrder::PreOrder>(
         [&](MonadDoOp doOp) { doOps.push_back(doOp); });
     for (MonadDoOp doOp : doOps)
-      lowerDo(doOp);
+      lowerDo(doOp, tags);
     module.walk([](MonadEitherBranchOp branch) { lowerEitherBranch(branch); });
-    module.walk([](MonadErrorUnionSwitchOp switchOp) {
-      lowerErrorUnionSwitch(switchOp);
+    module.walk([&](MonadErrorUnionSwitchOp switchOp) {
+      lowerErrorUnionSwitch(switchOp, tags);
     });
 
     TypeConverter converter;
@@ -762,6 +772,7 @@ struct ConvertMonadToCFPass
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<MonadDialect>();
+    target.addLegalOp<MonadErrorDeclareOp>();
     target.markUnknownOpDynamicallyLegal([&](Operation *op) {
       if (FunctionOpInterface function = dyn_cast<FunctionOpInterface>(op))
         return converter.isSignatureLegal(
@@ -770,10 +781,12 @@ struct ConvertMonadToCFPass
     });
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<ReturnLowering, MaybeNoneLowering, EitherLeftLowering,
-                 ThrowLowering, ErrorMakeLowering, ErrorPayloadLowering,
-                 WidenLowering, SelectLowering, CastLowering>(converter,
-                                                              &getContext());
+    patterns
+        .add<ReturnLowering, MaybeNoneLowering, ErrorMakeLowering,
+             ErrorPayloadLowering, WidenLowering, SelectLowering, CastLowering>(
+            converter, &getContext());
+    patterns.add<EitherLeftLowering, ThrowLowering>(converter, &getContext(),
+                                                    tags);
     patterns.add<SwitchLowering>(converter, &getContext(), /*benefit=*/2);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
@@ -782,34 +795,44 @@ struct ConvertMonadToCFPass
     cf::populateCFStructuralTypeConversions(converter, patterns);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       return signalPassFailure();
+    for (MonadErrorDeclareOp declaration :
+         llvm::make_early_inc_range(module.getOps<MonadErrorDeclareOp>()))
+      declaration.erase();
   }
 
-  /// Fails if two errors of the module have the same tag.
-  LogicalResult checkErrorTags(ModuleOp module) {
-    llvm::StringSet<> names;
-    auto collect = [&](ErrorType error) {
-      names.insert(error.getName().getValue());
-    };
-    module.walk([&](Operation *op) {
+  /// Fails if the module uses an error, in any type, without a declaration
+  /// with the same payload types. The operations of the monad dialect verify
+  /// the errors they use; this also covers other operations, such as
+  /// functions, and block arguments.
+  LogicalResult checkErrorDeclarations(ModuleOp module) {
+    SymbolTable symbolTable(module);
+    WalkResult result = module.walk([&](Operation *op) -> WalkResult {
+      LogicalResult status = success();
+      auto check = [&](ErrorType error) {
+        if (failed(status))
+          return;
+        MonadErrorDeclareOp declaration =
+            symbolTable.lookup<MonadErrorDeclareOp>(error.getName().getValue());
+        if (!declaration ||
+            TypeRange(error.getPayloadTypes()) !=
+                TypeRange(llvm::to_vector(
+                    declaration.getPayloadTypes().getAsValueRange<TypeAttr>())))
+          status = op->emitOpError()
+                   << "uses " << error << ", which no error of the module "
+                   << "declares with these payload types";
+      };
       for (Type type : op->getOperandTypes())
-        type.walk(collect);
+        type.walk(check);
       for (Type type : op->getResultTypes())
-        type.walk(collect);
-      op->getAttrDictionary().walk(collect);
+        type.walk(check);
+      op->getAttrDictionary().walk(check);
       for (Region &region : op->getRegions())
         for (Block &block : region)
           for (Type type : block.getArgumentTypes())
-            type.walk(collect);
+            type.walk(check);
+      return failed(status) ? WalkResult::interrupt() : WalkResult::advance();
     });
-    DenseMap<int32_t, StringRef> nameByTag;
-    for (StringRef name : names.keys()) {
-      auto [it, inserted] = nameByTag.try_emplace(getErrorTag(name), name);
-      if (!inserted)
-        return module.emitError()
-               << "errors \"" << it->second << "\" and \"" << name
-               << "\" have the same tag " << it->first;
-    }
-    return success();
+    return failure(result.wasInterrupted());
   }
 };
 } // namespace

@@ -128,7 +128,8 @@ MonadTypeInterface MaybeType::cloneWithValueTypes(TypeRange valueTypes) const {
 
 /// Verifies that the error name is not empty.
 LogicalResult ErrorType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                StringAttr name, ArrayRef<Type> payloadTypes) {
+                                FlatSymbolRefAttr name,
+                                ArrayRef<Type> payloadTypes) {
   if (name.getValue().empty())
     return emitError() << "expects a non-empty error name";
   return success();

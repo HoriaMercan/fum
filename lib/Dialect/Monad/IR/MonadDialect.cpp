@@ -17,7 +17,7 @@ using namespace mlir::monad;
 
 namespace {
 /// Prints short aliases for error types and error unions, such as
-/// `!error_overflow = !monad.error<"overflow">`.
+/// `!error_overflow = !monad.error<@overflow>`.
 struct MonadOpAsmDialectInterface : public OpAsmDialectInterface {
   using OpAsmDialectInterface::OpAsmDialectInterface;
 

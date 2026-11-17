@@ -41,27 +41,28 @@ def MonadMaybeType : Monad_Type<"Maybe", "maybe", [MonadTypeInterface]> {
 def MonadErrorType : Monad_Type<"Error", "error"> {
   let summary = "Named error type";
   let description = [{
-    A value of type `!monad.error<"name", P1, ..., Pk>` is the error `name`
+    A value of type `!monad.error<@name, P1, ..., Pk>` is the error `@name`
     carrying one payload value of each type `P1`, ..., `Pk`. Without payload,
-    the type has exactly one value, like the builtin `none` type. Errors are
-    identified by their name: two errors with the same name must have the
-    same payload types wherever they meet, for example in an
-    `!monad.error_union`.
+    the type has exactly one value, like the builtin `none` type. The error
+    is declared by `monad.error.declare @name(P1, ..., Pk)` in the enclosing
+    module: the operations that use the type check that the declaration
+    exists and has the same payload types, as `func.call` checks the
+    signature of its callee.
 
     ```mlir
-    !monad.error<"overflow">
-    !monad.error<"out_of_bounds", index, index>
+    !monad.error<@overflow>
+    !monad.error<@out_of_bounds, index, index>
     ```
   }];
   let parameters = (ins
-      "::mlir::StringAttr":$name,
+      "::mlir::FlatSymbolRefAttr":$name,
       OptionalArrayRefParameter<"::mlir::Type", "payload types">:$payloadTypes);
   let assemblyFormat = "`<` $name (`,` $payloadTypes^)? `>`";
   let genVerifyDecl = 1;
   let builders = [
     TypeBuilder<(ins "::llvm::StringRef":$name,
                      CArg<"::mlir::TypeRange", "{}">:$payloadTypes), [{
-      return $_get($_ctxt, ::mlir::StringAttr::get($_ctxt, name),
+      return $_get($_ctxt, ::mlir::FlatSymbolRefAttr::get($_ctxt, name),
                    ::llvm::to_vector(payloadTypes));
     }]>
   ];
@@ -80,7 +81,7 @@ def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
     member.
 
     ```mlir
-    !monad.error_union<{!monad.error<"div_by_zero">, !monad.error<"overflow">}>
+    !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
     ```
   }];
   let parameters = (ins
@@ -122,10 +123,10 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.
-    !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
-                                      !monad.error<"overflow">}>, i32>
+    !monad.either<!monad.error_union<{!monad.error<@div_by_zero>,
+                                      !monad.error<@overflow>}>, i32>
     // Either nothing, or a division by zero.
-    !monad.either<!monad.error<"div_by_zero">, none>
+    !monad.either<!monad.error<@div_by_zero>, none>
     ```
   }];
   let parameters = (ins

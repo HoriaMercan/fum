@@ -138,6 +138,38 @@ def MonadMaybeNoneOp : Monad_Op<"maybe.none", [Pure]> {
 // Error operations
 //===----------------------------------------------------------------------===//
 
+def MonadErrorDeclareOp : Monad_Op<"error.declare", [
+    SymbolName,
+    SymbolVisibility,
+    Symbol,
+    HasParent<"::mlir::ModuleOp">]> {
+  let summary = "Declares an error and its payload types";
+  let description = [{
+    Declares the error `@name`, which carries one payload value of each listed
+    type. The payload list is omitted when it is empty. The type of the error
+    is `!monad.error<@name, P1, ..., Pk>`.
+
+    The declarations of a module are the registry of its errors. Each error
+    has a positive tag that identifies it once lowered: the explicit `tag` if
+    given, which no other declaration of the module may use, and otherwise
+    the next unused tag in the order of the declarations, starting at 1.
+    Explicit tags keep the tags of separately compiled modules in agreement.
+
+    ```mlir
+    monad.error.declare @div_by_zero
+    monad.error.declare @out_of_bounds(index, index) tag 7
+    ```
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       TypeArrayAttr:$payloadTypes,
+                       OptionalAttr<ConfinedAttr<I32Attr, [IntPositive]>>:$tag,
+                       OptionalAttr<StrAttr>:$sym_visibility);
+  let assemblyFormat = [{
+    $sym_name `` custom<PayloadTypes>($payloadTypes) (`tag` $tag^)? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def MonadErrorMakeOp : Monad_Op<"error.make", [
     Pure,
     RangedTypesMatchWith<"payload types match the payload types of the result",
@@ -148,8 +180,8 @@ def MonadErrorMakeOp : Monad_Op<"error.make", [
     Creates the error of the result type carrying the given payload values.
 
     ```mlir
-    %e = monad.error.make : !monad.error<"overflow">
-    %f = monad.error.make %i, %n : !monad.error<"out_of_bounds", index, index>
+    %e = monad.error.make : !monad.error<@overflow>
+    %f = monad.error.make %i, %n : !monad.error<@out_of_bounds, index, index>
     ```
   }];
   let arguments = (ins Variadic<AnyType>:$payload);
@@ -167,7 +199,7 @@ def MonadErrorPayloadOp : Monad_Op<"error.payload", [
     Returns the payload values carried by an error.
 
     ```mlir
-    %i, %n = monad.error.payload %f : !monad.error<"out_of_bounds", index, index>
+    %i, %n = monad.error.payload %f : !monad.error<@out_of_bounds, index, index>
     ```
   }];
   let arguments = (ins MonadErrorType:$error);
@@ -187,12 +219,12 @@ def MonadErrorUnionSwitchOp : Monad_Op<"error_union.switch", [
     are produced by the switch, which forwards no operands.
 
     ```mlir
-    monad.error_union.switch %e [!monad.error<"div_by_zero"> -> ^division,
-                                 !monad.error<"overflow"> -> ^overflow]
-        : !monad.error_union<{!monad.error<"div_by_zero">,
-                              !monad.error<"overflow">}>
-    ^division(%d: !monad.error<"div_by_zero">):
-    ^overflow(%o: !monad.error<"overflow">):
+    monad.error_union.switch %e [!monad.error<@div_by_zero> -> ^division,
+                                 !monad.error<@overflow> -> ^overflow]
+        : !monad.error_union<{!monad.error<@div_by_zero>,
+                              !monad.error<@overflow>}>
+    ^division(%d: !monad.error<@div_by_zero>):
+    ^overflow(%o: !monad.error<@overflow>):
     ```
   }];
   let arguments = (ins MonadErrorUnionType:$input, TypeArrayAttr:$caseTypes);
@@ -262,8 +294,8 @@ def MonadEitherThrowOp : Monad_Op<"either.throw", [Pure]> {
     of the result is that error, or an error union of which it is a member.
 
     ```mlir
-    %m = monad.either.throw %e : !monad.error<"overflow">
-        -> !monad.either<!monad.error<"overflow">, i32>
+    %m = monad.either.throw %e : !monad.error<@overflow>
+        -> !monad.either<!monad.error<@overflow>, i32>
     ```
   }];
   let arguments = (ins MonadErrorType:$error);
@@ -298,11 +330,11 @@ def MonadEitherCatchOp : Monad_Op<"either.catch", [
     forwards no operands.
 
     ```mlir
-    monad.either.catch %m, ^ok [!monad.error<"div_by_zero"> -> ^recover]
-        : !monad.either<!monad.error_union<{!monad.error<"div_by_zero">,
-                                            !monad.error<"overflow">}>, i32>
+    monad.either.catch %m, ^ok [!monad.error<@div_by_zero> -> ^recover]
+        : !monad.either<!monad.error_union<{!monad.error<@div_by_zero>,
+                                            !monad.error<@overflow>}>, i32>
     ^ok(%x: i32):
-    ^recover(%e: !monad.error<"div_by_zero">):
+    ^recover(%e: !monad.error<@div_by_zero>):
     ```
   }];
   let arguments = (ins MonadEitherType:$input, TypeArrayAttr:$caseTypes);
@@ -329,9 +361,9 @@ def MonadEitherWidenOp : Monad_Op<"either.widen", [
 
     ```mlir
     %w = monad.either.widen %m
-        : !monad.either<!monad.error_union<{!monad.error<"a">}>, i32>
-        to !monad.either<!monad.error_union<{!monad.error<"a">,
-                                             !monad.error<"b">}>, i32>
+        : !monad.either<!monad.error_union<{!monad.error<@a>}>, i32>
+        to !monad.either<!monad.error_union<{!monad.error<@a>,
+                                             !monad.error<@b>}>, i32>
     ```
   }];
   let arguments = (ins MonadEitherType:$input);

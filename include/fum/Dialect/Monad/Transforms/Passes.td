@@ -28,12 +28,13 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
       is one error is lowered as the union of that error;
     - any other `!monad.either<L, R...>` becomes an `i1` (set for a left),
       the values of `L`, and `R...`;
-    - `!monad.error<"name", P...>` becomes `P...`, and
+    - `!monad.error<@name, P...>` becomes `P...`, and
       `!monad.error_union<{E...}>` an `i32` tag and the payload slots.
 
-    The tag of an error is the FNV-1a hash of its name, masked to a positive
-    `i32`; the pass fails if two errors of the module get the same tag.
-    Unused slots hold `ub.poison`.
+    The tag of an error is the tag of its declaration in the module, as
+    `monad.error.declare` describes; the pass fails if the module uses an
+    error without a declaration with the same payload types. Unused slots
+    hold `ub.poison`.
   }];
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
