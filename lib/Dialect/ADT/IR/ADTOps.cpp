@@ -549,11 +549,46 @@ struct SwitchOnSelectOfMakes : public OpRewritePattern<SwitchOp> {
     return success();
   }
 };
+/// Threads the branches that pass a value built by `adt.make` to a block
+/// that only switches on its single argument: each such `cf.br` branches
+/// directly to the successor of the case. This is the reduction rule seen
+/// through a block argument, the case-of-case transformation of functional
+/// compilers. It keeps dominance, since every block that dominates the
+/// switch block also dominates its predecessors, and the switch block defines
+/// no value its successors could use.
+struct ThreadMakeThroughSwitch : public OpRewritePattern<SwitchOp> {
+  using OpRewritePattern<SwitchOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    Block *block = op->getBlock();
+    if (&block->front() != op.getOperation() || block->getNumArguments() != 1 ||
+        op.getInput() != block->getArgument(0))
+      return failure();
+    bool threaded = false;
+    for (Block *predecessor : llvm::to_vector(block->getPredecessors())) {
+      cf::BranchOp branch =
+          dyn_cast<cf::BranchOp>(predecessor->getTerminator());
+      if (!branch || branch.getDest() != block)
+        continue;
+      MakeOp make = branch.getDestOperands().front().getDefiningOp<MakeOp>();
+      if (!make)
+        continue;
+      rewriter.setInsertionPoint(branch);
+      rewriter.replaceOpWithNewOp<cf::BranchOp>(
+          branch, op.getDestinationForCase(make.getCaseName()),
+          getOperandsForMake(op, make));
+      threaded = true;
+    }
+    return success(threaded);
+  }
+};
 } // namespace
 
 void SwitchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                            MLIRContext *context) {
-  patterns.add<SwitchOnMake, SwitchOnSelectOfMakes>(context);
+  patterns.add<SwitchOnMake, SwitchOnSelectOfMakes, ThreadMakeThroughSwitch>(
+      context);
 }
 
 //===----------------------------------------------------------------------===//

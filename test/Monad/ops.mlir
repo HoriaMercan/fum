@@ -176,3 +176,35 @@ func.func @catch_with_match(%ratio: !monad.either<!adt.sum<div_by_zero, overflow
   }
   return %result : !monad.either<!adt.sum<overflow>, i32>
 }
+
+// Inside a do, a block can branch on the case of an error to the block that
+// handles it with adt.switch.
+// CHECK-LABEL: func.func @switch_in_do
+// CHECK: monad.either.branch %{{.+}}, left ^[[FAILED:.+]], right ^[[OK:.+]] : !monad.either<!adt.sum<div_by_zero, overflow>, i32>
+// CHECK: ^[[FAILED]](%[[ERROR:.+]]: !adt.sum<div_by_zero, overflow>):
+// CHECK: adt.switch %[[ERROR]] : !adt.sum<div_by_zero, overflow>, [
+// CHECK-NEXT: div_by_zero: ^[[RECOVER:.+]],
+// CHECK-NEXT: overflow: ^[[RETHROW:.+]]
+func.func @switch_in_do(%ratio: !monad.either<!adt.sum<div_by_zero, overflow>, i32>)
+    -> !monad.either<!adt.sum<overflow>, i32> {
+  %result = monad.do : !monad.either<!adt.sum<overflow>, i32> {
+    monad.either.branch %ratio, left ^failed, right ^ok : !monad.either<!adt.sum<div_by_zero, overflow>, i32>
+  ^failed(%error: !adt.sum<div_by_zero, overflow>):
+    adt.switch %error : !adt.sum<div_by_zero, overflow>, [
+      div_by_zero: ^recover,
+      overflow: ^rethrow
+    ]
+  ^recover:
+    %zero = arith.constant 0 : i32
+    %recovered = monad.return %zero : !monad.either<!adt.sum<overflow>, i32>
+    monad.yield %recovered : !monad.either<!adt.sum<overflow>, i32>
+  ^rethrow:
+    %overflow = adt.make overflow : !adt.sum<overflow>
+    %rethrown = monad.either.left %overflow : !monad.either<!adt.sum<overflow>, i32>
+    monad.yield %rethrown : !monad.either<!adt.sum<overflow>, i32>
+  ^ok(%value: i32):
+    %success = monad.return %value : !monad.either<!adt.sum<overflow>, i32>
+    monad.yield %success : !monad.either<!adt.sum<overflow>, i32>
+  }
+  return %result : !monad.either<!adt.sum<overflow>, i32>
+}

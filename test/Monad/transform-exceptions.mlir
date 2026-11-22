@@ -9,9 +9,9 @@
 // CHECK-LABEL: func.func @tile_and_fuse
 // CHECK: monad.do : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
 // CHECK: monad.either.branch %{{.+}}, left ^{{.+}}, right ^{{.+}} : !monad.either<!adt.sum<silenceable>, !transform.any_op, !transform.any_op>
-// CHECK: adt.match %{{.+}} : !adt.sum<silenceable> -> !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+// CHECK: adt.switch %{{.+}} : !adt.sum<silenceable>, [
 // CHECK: monad.bind
-// CHECK: adt.match %{{.+}} : !adt.sum<definite, silenceable> -> !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+// CHECK: adt.switch %{{.+}} : !adt.sum<definite, silenceable>, [
 
 // At the low level, every either is merged with its sum of failures: the
 // only failure that leaves the function is definite.
@@ -39,14 +39,13 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
       monad.either.branch %tiling, left ^tiling_failed, right ^tiled
           : !monad.either<!adt.sum<silenceable>, !transform.any_op, !transform.any_op>
     ^tiling_failed(%tiling_error: !adt.sum<silenceable>):
-      %untiled = adt.match %tiling_error : !adt.sum<silenceable>
-          -> !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-      case silenceable {
-        %untiled_pair = monad.return %matmul, %matmul
-            : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-        adt.yield %untiled_pair : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-      }
-      monad.yield %untiled : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+      adt.switch %tiling_error : !adt.sum<silenceable>, [
+        silenceable: ^tiling_suppressed
+      ]
+    ^tiling_suppressed:
+      %untiled_pair = monad.return %matmul, %matmul
+          : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+      monad.yield %untiled_pair : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
     ^tiled(%tiled_op: !transform.any_op, %tiled_loop: !transform.any_op):
       %tiled_pair = monad.return %tiled_op, %tiled_loop
           : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
@@ -63,20 +62,19 @@ func.func @tile_and_fuse(%matmul: !transform.any_op, %producer: !transform.any_o
     monad.either.branch %fusion, left ^fusion_failed, right ^fused
         : !monad.either<!adt.sum<definite, silenceable>, !transform.any_op, !transform.any_op>
   ^fusion_failed(%fusion_error: !adt.sum<definite, silenceable>):
-    %handled = adt.match %fusion_error : !adt.sum<definite, silenceable>
-        -> !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-    case silenceable {
-      %unfused_pair = monad.return %producer, %loop
-          : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-      adt.yield %unfused_pair : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-    }
-    case definite {
-      %definite_error = adt.make definite : !adt.sum<definite>
-      %aborted = monad.either.left %definite_error
-          : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-      adt.yield %aborted : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
-    }
-    monad.yield %handled : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+    adt.switch %fusion_error : !adt.sum<definite, silenceable>, [
+      definite: ^aborted,
+      silenceable: ^fusion_suppressed
+    ]
+  ^fusion_suppressed:
+    %unfused_pair = monad.return %producer, %loop
+        : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+    monad.yield %unfused_pair : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+  ^aborted:
+    %definite_error = adt.make definite : !adt.sum<definite>
+    %abort = monad.either.left %definite_error
+        : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
+    monad.yield %abort : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>
   ^fused(%fused_op: !transform.any_op, %new_loop: !transform.any_op):
     %fused_pair = monad.return %fused_op, %new_loop
         : !monad.either<!adt.sum<definite>, !transform.any_op, !transform.any_op>

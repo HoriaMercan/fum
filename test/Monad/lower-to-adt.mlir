@@ -121,6 +121,20 @@ func.func @merged_branch(%input: !monad.either<!adt.sum<div_by_zero, overflow>, 
 // CANON-NOT: adt.switch
 // CANON-LABEL: func.func @half_ratio
 
+// After case-of-case threading, half_ratio switches once on the result of
+// safe_div: div_by_zero recovers, overflow is passed on, right is halved.
+// CANON: adt.switch %{{.+}} : !adt.sum<div_by_zero, overflow, right(i32)>, [
+// CANON-NEXT: right: ^[[HALVE:.+]],
+// CANON-NEXT: div_by_zero: ^[[RECOVER:.+]],
+// CANON-NEXT: overflow: ^[[PASS:.+]]
+// CANON-NEXT: ]
+// CANON: ^[[RECOVER]]:
+// CANON-NEXT: adt.make right(%{{.+}}) : !adt.sum<overflow, right(i32)>
+// CANON: ^[[PASS]]:
+// CANON-NEXT: adt.make overflow : !adt.sum<overflow, right(i32)>
+// CANON-NOT: adt.switch
+// CANON-LABEL: func.func @half_if_even
+
 //===----------------------------------------------------------------------===//
 // Executed programs
 //===----------------------------------------------------------------------===//
@@ -159,18 +173,18 @@ func.func @half_ratio(%a: i32, %b: i32) -> !monad.either<!adt.sum<overflow>, i32
     %ratio = func.call @safe_div(%a, %b) : (i32, i32) -> !monad.either<!adt.sum<div_by_zero, overflow>, i32>
     monad.either.branch %ratio, left ^failed, right ^divided : !monad.either<!adt.sum<div_by_zero, overflow>, i32>
   ^failed(%error: !adt.sum<div_by_zero, overflow>):
-    %handled = adt.match %error : !adt.sum<div_by_zero, overflow> -> !monad.either<!adt.sum<overflow>, i32>
-    case div_by_zero {
-      %zero = arith.constant 0 : i32
-      %recovered = monad.return %zero : !monad.either<!adt.sum<overflow>, i32>
-      adt.yield %recovered : !monad.either<!adt.sum<overflow>, i32>
-    }
-    case overflow {
-      %overflow_error = adt.make overflow : !adt.sum<overflow>
-      %rethrown = monad.either.left %overflow_error : !monad.either<!adt.sum<overflow>, i32>
-      adt.yield %rethrown : !monad.either<!adt.sum<overflow>, i32>
-    }
-    monad.yield %handled : !monad.either<!adt.sum<overflow>, i32>
+    adt.switch %error : !adt.sum<div_by_zero, overflow>, [
+      div_by_zero: ^recover,
+      overflow: ^rethrow
+    ]
+  ^recover:
+    %zero = arith.constant 0 : i32
+    %recovered = monad.return %zero : !monad.either<!adt.sum<overflow>, i32>
+    monad.yield %recovered : !monad.either<!adt.sum<overflow>, i32>
+  ^rethrow:
+    %overflow_error = adt.make overflow : !adt.sum<overflow>
+    %rethrown = monad.either.left %overflow_error : !monad.either<!adt.sum<overflow>, i32>
+    monad.yield %rethrown : !monad.either<!adt.sum<overflow>, i32>
   ^divided(%quotient: i32):
     %two = arith.constant 2 : i32
     %half = arith.divsi %quotient, %two : i32
@@ -261,17 +275,17 @@ func.func @tile_and_fuse(%matmul: i32, %producer: i32) -> !monad.either<!adt.sum
     %fusion = func.call @fuse_into_containing_op(%producer, %loop) : (i32, i32) -> !monad.either<!adt.sum<definite, silenceable>, i32, i32>
     monad.either.branch %fusion, left ^fusion_failed, right ^fused : !monad.either<!adt.sum<definite, silenceable>, i32, i32>
   ^fusion_failed(%fusion_error: !adt.sum<definite, silenceable>):
-    %handled = adt.match %fusion_error : !adt.sum<definite, silenceable> -> !monad.either<!adt.sum<definite>, i32, i32>
-    case silenceable {
-      %unfused = monad.return %producer, %loop : !monad.either<!adt.sum<definite>, i32, i32>
-      adt.yield %unfused : !monad.either<!adt.sum<definite>, i32, i32>
-    }
-    case definite {
-      %definite_error = adt.make definite : !adt.sum<definite>
-      %aborted = monad.either.left %definite_error : !monad.either<!adt.sum<definite>, i32, i32>
-      adt.yield %aborted : !monad.either<!adt.sum<definite>, i32, i32>
-    }
-    monad.yield %handled : !monad.either<!adt.sum<definite>, i32, i32>
+    adt.switch %fusion_error : !adt.sum<definite, silenceable>, [
+      definite: ^aborted,
+      silenceable: ^fusion_suppressed
+    ]
+  ^fusion_suppressed:
+    %unfused = monad.return %producer, %loop : !monad.either<!adt.sum<definite>, i32, i32>
+    monad.yield %unfused : !monad.either<!adt.sum<definite>, i32, i32>
+  ^aborted:
+    %definite_error = adt.make definite : !adt.sum<definite>
+    %abort = monad.either.left %definite_error : !monad.either<!adt.sum<definite>, i32, i32>
+    monad.yield %abort : !monad.either<!adt.sum<definite>, i32, i32>
   ^fused(%fused_op: i32, %new_loop: i32):
     %fused_pair = monad.return %fused_op, %new_loop : !monad.either<!adt.sum<definite>, i32, i32>
     monad.yield %fused_pair : !monad.either<!adt.sum<definite>, i32, i32>

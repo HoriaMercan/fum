@@ -48,8 +48,10 @@ def MonadDoOp : Monad_Op<"do", [RecursiveMemoryEffects]> {
     the computation with its result. Every value bound in the region is of the
     same monad as the result: its type is the result type up to the value
     types. Every block except the first must have a unique
-    predecessor, which may branch to it along several edges. Every block must end with a terminator from the monad
-    dialect.
+    predecessor, which may branch to it along several edges. Every block must
+    end with a terminator from the monad dialect, or with `adt.switch`, the
+    case analysis on a sum, whose successors are blocks of the region: a
+    block can branch on the case of an error to the block that handles it.
 
     How a bind continues depends on the monad. For the maybe monad, binding
     `some` value branches to the next block with the values it carries, and

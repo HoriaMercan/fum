@@ -103,3 +103,33 @@ func.func @widen_of_make() -> !adt.sum<a, b> {
   %wider = adt.widen %b : !adt.sum<b> to !adt.sum<a, b>
   return %wider : !adt.sum<a, b>
 }
+
+// -----
+
+// A branch that passes a constructor to a block that only switches on it
+// goes directly to the successor of the case: case-of-case.
+// CHECK-LABEL: func.func @thread_make
+// CHECK-SAME: (%[[FLAG:.*]]: i1, %[[CODE:.*]]: i32)
+// CHECK: cf.cond_br %[[FLAG]], ^[[IO:.*]], ^[[EOF:.*]]
+// CHECK: ^[[IO]]:
+// CHECK-NEXT: return %[[CODE]] : i32
+// CHECK-NOT: adt.
+func.func @thread_make(%flag: i1, %code: i32) -> i32 {
+  cf.cond_br %flag, ^make_io, ^make_eof
+^make_io:
+  %io = adt.make io(%code) : !adt.sum<eof, io(i32)>
+  cf.br ^dispatch(%io : !adt.sum<eof, io(i32)>)
+^make_eof:
+  %eof = adt.make eof : !adt.sum<eof, io(i32)>
+  cf.br ^dispatch(%eof : !adt.sum<eof, io(i32)>)
+^dispatch(%error: !adt.sum<eof, io(i32)>):
+  adt.switch %error : !adt.sum<eof, io(i32)>, [
+    eof: ^eof,
+    io: ^io
+  ]
+^io(%value: i32):
+  return %value : i32
+^eof:
+  %zero = arith.constant 0 : i32
+  return %zero : i32
+}
