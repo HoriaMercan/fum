@@ -25,6 +25,8 @@
 
 #include "fum/Dialect/Monad/Transforms/Passes.h"
 
+#include "fum/Dialect/ADT/IR/ADTDialect.h"
+#include "fum/Dialect/ADT/Transforms/ConvertADTToSCF.h"
 #include "fum/Dialect/Monad/IR/MonadDialect.h"
 #include "fum/Dialect/Monad/IR/MonadOps.h"
 #include "fum/Dialect/Monad/IR/MonadTypes.h"
@@ -32,6 +34,7 @@
 #include "mlir/Dialect/ControlFlow/Transforms/StructuralTypeConversions.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/StringMap.h"
 
@@ -94,6 +97,8 @@ static void convertMonadType(Type type, SmallVectorImpl<Type> &results) {
       convertMonadType(either.getLeftType(), results);
       convertMonadTypes(either.getValueTypes(), results);
     }
+  } else if (adt::SumType sum = dyn_cast<adt::SumType>(type)) {
+    adt::convertSumType(sum, results, convertMonadType);
   } else {
     results.push_back(type);
   }
@@ -762,14 +767,14 @@ struct ConvertMonadToCFPass
     converter.addConversion(
         [](Type type,
            SmallVectorImpl<Type> &results) -> std::optional<LogicalResult> {
-          if (!isa<MonadDialect>(type.getDialect()))
+          if (!isa<MonadDialect, adt::ADTDialect>(type.getDialect()))
             return std::nullopt;
           convertMonadType(type, results);
           return success();
         });
 
     ConversionTarget target(getContext());
-    target.addIllegalDialect<MonadDialect>();
+    target.addIllegalDialect<MonadDialect, adt::ADTDialect>();
     target.addLegalOp<MonadErrorDeclareOp>();
     target.markUnknownOpDynamicallyLegal([&](Operation *op) {
       if (FunctionOpInterface function = dyn_cast<FunctionOpInterface>(op))
@@ -790,6 +795,8 @@ struct ConvertMonadToCFPass
     populateCallOpTypeConversionPattern(patterns, converter);
     populateReturnOpTypeConversionPattern(patterns, converter);
     cf::populateCFStructuralTypeConversions(converter, patterns);
+    scf::populateSCFStructuralTypeConversions(converter, patterns);
+    adt::populateADTToSCFConversionPatterns(converter, patterns);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       return signalPassFailure();
     for (MonadErrorDeclareOp declaration :

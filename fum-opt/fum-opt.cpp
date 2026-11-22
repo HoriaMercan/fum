@@ -21,6 +21,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "fum/Dialect/ADT/IR/ADTDialect.h"
+#include "fum/Dialect/ADT/Transforms/Passes.h"
 #include "fum/Dialect/Dep/IR/DepDialect.h"
 #include "fum/Dialect/Dep/Transforms/Passes.h"
 #include "fum/Dialect/Monad/IR/MonadDialect.h"
@@ -37,6 +38,7 @@ static void registerExternalInterfaces(mlir::DialectRegistry &registry) {
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
+  mlir::adt::registerPasses();
   mlir::dep::registerPasses();
   mlir::monad::registerPasses();
 

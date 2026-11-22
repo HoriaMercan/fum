@@ -462,3 +462,17 @@ func.func @main() -> i32 {
   %s1 = arith.select %ok1, %s2, %f1 : i32
   return %s1 : i32
 }
+
+// An either whose left type is a sum is an i1, the tag and slots of the sum,
+// then the values; the case io gets its position in name order as tag.
+// CHECK-LABEL: func.func @either_of_sum
+// CHECK-SAME: (%[[CODE:.*]]: i32) -> (i1, i32, i32, i32)
+// CHECK-DAG: %[[TRUE:.*]] = arith.constant true
+// CHECK-DAG: %[[TAG_IO:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[POISON:.*]] = ub.poison : i32
+// CHECK: return %[[TRUE]], %[[TAG_IO]], %[[CODE]], %[[POISON]] : i1, i32, i32, i32
+func.func @either_of_sum(%code: i32) -> !monad.either<!adt.sum<io(i32), div_by_zero>, i32> {
+  %error = adt.make io(%code) : !adt.sum<div_by_zero, io(i32)>
+  %failure = monad.either.left %error : !monad.either<!adt.sum<div_by_zero, io(i32)>, i32>
+  return %failure : !monad.either<!adt.sum<div_by_zero, io(i32)>, i32>
+}

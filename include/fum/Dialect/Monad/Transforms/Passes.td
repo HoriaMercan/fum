@@ -31,6 +31,11 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
     - `!monad.error<@name, P...>` becomes `P...`, and
       `!monad.error_union<{E...}>` an `i32` tag and the payload slots.
 
+    Sum types of the `adt` dialect, inside monadic types or not, are lowered
+    in the same conversion, as `--convert-adt-to-scf` lowers them, so that
+    an either whose left type is a sum becomes an `i1`, the tag and slots of
+    the sum, and `R...`.
+
     The tag of an error is the tag of its declaration in the module, as
     `monad.error.declare` describes; the pass fails if the module uses an
     error without a declaration with the same payload types. Unused slots
@@ -39,6 +44,7 @@ def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::cf::ControlFlowDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::ub::UBDialect"
   ];
 }

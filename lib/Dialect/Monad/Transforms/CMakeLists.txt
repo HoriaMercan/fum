@@ -8,6 +8,7 @@ add_mlir_dialect_library(MLIRMonadTransforms
   MLIRMonadPassesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRADTTransforms
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRControlFlowTransforms
@@ -15,6 +16,7 @@ add_mlir_dialect_library(MLIRMonadTransforms
   MLIRFuncTransforms
   MLIRMonadDialect
   MLIRPass
+  MLIRSCFTransforms
   MLIRTransforms
   MLIRUBDialect
   )
