@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -19,6 +20,7 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "fum/Dialect/ADT/IR/ADTDialect.h"
 #include "fum/Dialect/Dep/IR/DepDialect.h"
 #include "fum/Dialect/Dep/Transforms/Passes.h"
 #include "fum/Dialect/Monad/IR/MonadDialect.h"
@@ -39,9 +41,10 @@ int main(int argc, char **argv) {
   mlir::monad::registerPasses();
 
   mlir::DialectRegistry registry;
-  registry.insert<mlir::dep::DepDialect, mlir::monad::MonadDialect,
-                  mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
-                  mlir::func::FuncDialect, mlir::transform::TransformDialect,
+  registry.insert<mlir::adt::ADTDialect, mlir::dep::DepDialect,
+                  mlir::monad::MonadDialect, mlir::arith::ArithDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::transform::TransformDialect, mlir::scf::SCFDialect,
                   mlir::ub::UBDialect>();
   registerExternalInterfaces(registry);
 
