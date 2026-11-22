@@ -125,15 +125,13 @@ def ADT_WidenOp : ADT_Op<"widen", [Pure]> {
   let summary = "Views a sum as a sum with at least its cases";
   let description = [{
     Returns the input as a value of a sum that has every case of the input,
-    with the same field types, and possibly more cases, in any order. The
-    case and the fields are kept. This is the inclusion of a sub-coproduct,
-    the only conversion between sums: none is implicit.
+    with the same field types, and at least one more case. The case and the
+    fields are kept. This is the inclusion of a sub-coproduct, the only
+    conversion between sums: none is implicit.
 
     ```mlir
     %wider = adt.widen %error : !adt.sum<overflow> to !adt.sum<div_by_zero, overflow>
     ```
-
-    The result type differs from the input type.
   }];
   let arguments = (ins ADT_SumType:$input);
   let results = (outs ADT_SumType:$result);

@@ -50,15 +50,3 @@ func.func @widen_twice(%error: !adt.sum<a>) -> !adt.sum<a, b, c> {
   %abc = adt.widen %ab : !adt.sum<a, b> to !adt.sum<a, b, c>
   return %abc : !adt.sum<a, b, c>
 }
-
-// -----
-
-// A widening followed by a widening back to the input type folds away.
-// CHECK-LABEL: func.func @widen_back
-// CHECK-SAME: (%[[ERROR:.*]]: !adt.sum<a, b>)
-// CHECK-NEXT: return %[[ERROR]] : !adt.sum<a, b>
-func.func @widen_back(%error: !adt.sum<a, b>) -> !adt.sum<a, b> {
-  %reordered = adt.widen %error : !adt.sum<a, b> to !adt.sum<b, a>
-  %back = adt.widen %reordered : !adt.sum<b, a> to !adt.sum<a, b>
-  return %back : !adt.sum<a, b>
-}

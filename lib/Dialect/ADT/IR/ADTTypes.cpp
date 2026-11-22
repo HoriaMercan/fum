@@ -19,6 +19,14 @@
 using namespace mlir;
 using namespace mlir::adt;
 
+SmallVector<SumCase> mlir::adt::sortCasesByName(ArrayRef<SumCase> cases) {
+  SmallVector<SumCase> sorted(cases);
+  llvm::stable_sort(sorted, [](const SumCase &lhs, const SumCase &rhs) {
+    return lhs.name.getValue() < rhs.name.getValue();
+  });
+  return sorted;
+}
+
 ArrayRef<SumCase> SumCase::copyCases(TypeStorageAllocator &allocator,
                                      ArrayRef<SumCase> cases) {
   SmallVector<SumCase> copies;
@@ -50,7 +58,7 @@ static bool isCaseName(StringRef name) {
 }
 
 /// Parses `<case, ...>`, where a case is a name, followed by its field types
-/// in parentheses if it has any.
+/// in parentheses if it has any. The cases may be written in any order.
 Type SumType::parse(AsmParser &parser) {
   SMLoc loc = parser.getCurrentLocation();
   SmallVector<StringAttr> names;
@@ -81,11 +89,12 @@ Type SumType::parse(AsmParser &parser) {
   SmallVector<SumCase> cases;
   for (auto [name, caseFields] : llvm::zip_equal(names, fields))
     cases.push_back({name, caseFields});
-  return parser.getChecked<SumType>(loc, parser.getContext(), cases);
+  return parser.getChecked<SumType>(loc, parser.getContext(),
+                                    sortCasesByName(cases));
 }
 
-/// Prints `<case, ...>`, with the field types of a case in parentheses if it
-/// has any.
+/// Prints `<case, ...>`, sorted by name, with the field types of a case in
+/// parentheses if it has any.
 void SumType::print(AsmPrinter &printer) const {
   printer << '<';
   llvm::interleaveComma(getCases(), printer, [&](const SumCase &sumCase) {
@@ -116,6 +125,11 @@ LogicalResult SumType::verify(function_ref<InFlightDiagnostic()> emitError,
       return emitError() << "expects every field of case '"
                          << sumCase.name.getValue() << "' to have a type";
   }
+  for (auto [previous, next] : llvm::zip(cases, cases.drop_front()))
+    if (previous.name.getValue() > next.name.getValue())
+      return emitError() << "expects the cases to be sorted by name, got '"
+                         << previous.name.getValue() << "' before '"
+                         << next.name.getValue() << "'";
   return success();
 }
 

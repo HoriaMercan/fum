@@ -58,9 +58,9 @@ func.func @match_not_exhaustive(%error: !adt.sum<a, b, c>) {
 
 // -----
 
-func.func @match_unknown_case(%error: !adt.sum<a, b>) {
+func.func @match_unknown_case(%error: !adt.sum<b, a>) {
   // expected-error @below {{expects 'c' to be a case of '!adt.sum<a, b>'}}
-  adt.match %error : !adt.sum<a, b>
+  adt.match %error : !adt.sum<b, a>
   case a, b {
     adt.yield
   }
@@ -168,8 +168,9 @@ func.func @widen_field_types(%error: !adt.sum<io(i32)>) {
 
 // -----
 
-func.func @widen_same_type(%error: !adt.sum<a>) {
+// A reordering is the same type, so it is not a widening.
+func.func @widen_same_type(%error: !adt.sum<a, b>) {
   // expected-error @below {{expects the result type to differ from the input type}}
-  %wider = adt.widen %error : !adt.sum<a> to !adt.sum<a>
+  %wider = adt.widen %error : !adt.sum<a, b> to !adt.sum<b, a>
   return
 }

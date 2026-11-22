@@ -47,13 +47,22 @@ def ADT_SumType : TypeDef<ADT_Dialect, "Sum"> {
       them, and the same name may appear in unrelated sums.
     - Every alternative is named. A union of types without names, such as
       `!adt.sum<i32, f32>`, is not expressible.
-    - Order is significant: `!adt.sum<a, b>` and `!adt.sum<b, a>` are
-      different types, related by `adt.widen`. A case is identified by its
-      position once lowered.
+    - Order is not significant: a case is identified by its name, so
+      `!adt.sum<a, b>` and `!adt.sum<b, a>` are the same type. The cases are
+      kept sorted by name, which is the order in which the type is printed,
+      and a case is identified by its position in that order once lowered.
     - Fields may have any type, including another sum. A sum cannot contain
       itself.
   }];
   let parameters = (ins ADT_SumCaseArrayParameter:$cases);
+  let skipDefaultBuilders = 1;
+  let builders = [
+    TypeBuilder<(ins "::llvm::ArrayRef<::mlir::adt::SumCase>":$cases), [{
+      ::llvm::SmallVector<::mlir::adt::SumCase> sorted =
+          ::mlir::adt::sortCasesByName(cases);
+      return $_get($_ctxt, sorted);
+    }]>
+  ];
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{

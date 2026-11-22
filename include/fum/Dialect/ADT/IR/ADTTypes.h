@@ -35,6 +35,9 @@ struct SumCase {
                                      ArrayRef<SumCase> cases);
 };
 
+/// Returns `cases` sorted by name, keeping the order of equal names.
+SmallVector<SumCase> sortCasesByName(ArrayRef<SumCase> cases);
+
 /// Hashes the name and the field types of `sumCase`.
 inline llvm::hash_code hash_value(const SumCase &sumCase) {
   return llvm::hash_combine(

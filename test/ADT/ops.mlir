@@ -2,11 +2,11 @@
 // RUN: fum-opt %s --mlir-print-op-generic | fum-opt | FileCheck %s
 
 // A case without fields has one value and no parentheses; a case with fields
-// lists their types; a field may be another sum.
+// lists their types; a field may be another sum. Cases print sorted by name.
 // CHECK-LABEL: func.func private @types
 // CHECK-SAME: !adt.sum<div_by_zero>
 // CHECK-SAME: !adt.sum<div_by_zero, io(i32), out_of_bounds(index, index)>
-// CHECK-SAME: !adt.sum<parse(!adt.sum<eof, unexpected(i8)>), io(i32)>
+// CHECK-SAME: !adt.sum<io(i32), parse(!adt.sum<eof, unexpected(i8)>)>
 func.func private @types(!adt.sum<div_by_zero>,
                          !adt.sum<div_by_zero, io(i32), out_of_bounds(index, index)>,
                          !adt.sum<parse(!adt.sum<eof, unexpected(i8)>), io(i32)>)
@@ -24,7 +24,7 @@ func.func @make(%code: i32) -> (!adt.sum<div_by_zero, io(i32)>, !adt.sum<div_by_
 // one field.
 // CHECK-LABEL: func.func @match_exhaustive
 func.func @match_exhaustive(%error: !adt.sum<div_by_zero, overflow, io(i32)>) -> i32 {
-  // CHECK: adt.match %{{.*}} : !adt.sum<div_by_zero, overflow, io(i32)> -> i32
+  // CHECK: adt.match %{{.*}} : !adt.sum<div_by_zero, io(i32), overflow> -> i32
   // CHECK-NEXT: case div_by_zero, overflow {
   // CHECK: adt.yield %{{.*}} : i32
   // CHECK: case io(%[[CODE:.*]]: i32) {
@@ -94,10 +94,20 @@ func.func @match_no_results(%error: !adt.sum<a, b>) {
   return
 }
 
-// Widening to a sum with more cases, in another order.
+// Widening to a sum with more cases; the order in which they are written
+// does not matter.
 // CHECK-LABEL: func.func @widen
 func.func @widen(%error: !adt.sum<overflow, io(i32)>) -> !adt.sum<io(i32), div_by_zero, overflow> {
-  // CHECK: adt.widen %{{.*}} : !adt.sum<overflow, io(i32)> to !adt.sum<io(i32), div_by_zero, overflow>
+  // CHECK: adt.widen %{{.*}} : !adt.sum<io(i32), overflow> to !adt.sum<div_by_zero, io(i32), overflow>
   %wider = adt.widen %error : !adt.sum<overflow, io(i32)> to !adt.sum<io(i32), div_by_zero, overflow>
   return %wider : !adt.sum<io(i32), div_by_zero, overflow>
+}
+
+// The order in which the cases are written does not matter: both spellings
+// are the same type, so no conversion is needed.
+// CHECK-LABEL: func.func @same_type
+// CHECK-SAME: (%[[ERROR:.*]]: !adt.sum<div_by_zero, io(i32)>) -> !adt.sum<div_by_zero, io(i32)>
+// CHECK-NEXT: return %[[ERROR]] : !adt.sum<div_by_zero, io(i32)>
+func.func @same_type(%error: !adt.sum<io(i32), div_by_zero>) -> !adt.sum<div_by_zero, io(i32)> {
+  return %error : !adt.sum<io(i32), div_by_zero>
 }

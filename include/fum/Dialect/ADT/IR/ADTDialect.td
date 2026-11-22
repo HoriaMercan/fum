@@ -30,8 +30,9 @@ def ADT_Dialect : Dialect {
     one elimination form, `adt.match` (case analysis), and one coercion,
     `adt.widen` (the inclusion of a sum into a sum with more cases).
 
-    The sums are structural: two sums with the same cases in the same order
-    are the same type, and nothing is declared. They are not recursive, since
+    The sums are structural: a case is identified by its name, so two sums
+    with the same cases are the same type, whatever the order in which the
+    cases are written, and nothing is declared. They are not recursive, since
     a structural type cannot refer to itself.
   }];
   let cppNamespace = "::mlir::adt";

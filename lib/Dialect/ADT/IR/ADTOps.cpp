@@ -379,14 +379,11 @@ LogicalResult WidenOp::verify() {
   return success();
 }
 
-/// Folds two widenings into one, or into nothing if the outer one returns
-/// to the type of the inner one's input.
+/// Folds two widenings into one.
 OpFoldResult WidenOp::fold(FoldAdaptor adaptor) {
   WidenOp inner = getInput().getDefiningOp<WidenOp>();
   if (!inner)
     return {};
-  if (inner.getInput().getType() == getType())
-    return inner.getInput();
   getInputMutable().assign(inner.getInput());
   return getResult();
 }
