@@ -9,10 +9,8 @@
 #ifndef FUM_DIALECT_MONAD_TRANSFORMS_PASSES_H
 #define FUM_DIALECT_MONAD_TRANSFORMS_PASSES_H
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "fum/Dialect/ADT/IR/ADTDialect.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 

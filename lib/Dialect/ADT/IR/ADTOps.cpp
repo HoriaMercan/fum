@@ -8,6 +8,8 @@
 
 #include "fum/Dialect/ADT/IR/ADTOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
@@ -354,6 +356,207 @@ void MatchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
+// SwitchOp
+//===----------------------------------------------------------------------===//
+
+/// Parses `%input : sum-type, [ (default: ^dest ,)? case: ^dest, ... ]`.
+ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand input;
+  SumType inputType;
+  if (parser.parseOperand(input) || parser.parseColon() ||
+      parser.parseType(inputType) ||
+      parser.resolveOperand(input, inputType, result.operands) ||
+      parser.parseComma())
+    return failure();
+  Builder &builder = parser.getBuilder();
+  SmallVector<Attribute> names;
+  SmallVector<Block *> caseDestinations;
+  Block *defaultDestination = nullptr;
+  if (parser.parseCommaSeparatedList(
+          OpAsmParser::Delimiter::Square, [&]() -> ParseResult {
+            SMLoc loc = parser.getCurrentLocation();
+            StringRef name;
+            Block *destination = nullptr;
+            if (parser.parseKeyword(&name) || parser.parseColon() ||
+                parser.parseSuccessor(destination))
+              return failure();
+            if (name == "default") {
+              if (!names.empty() || defaultDestination)
+                return parser.emitError(loc, "expected the default case "
+                                             "first, and only once");
+              defaultDestination = destination;
+              return success();
+            }
+            names.push_back(builder.getStringAttr(name));
+            caseDestinations.push_back(destination);
+            return success();
+          }))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute(getCaseNamesAttrName(result.name),
+                      builder.getArrayAttr(names));
+  result.addSuccessors(caseDestinations);
+  if (defaultDestination)
+    result.addSuccessors(defaultDestination);
+  return success();
+}
+
+/// Prints the form that `SwitchOp::parse` parses, with the default case
+/// first.
+void SwitchOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getInput() << " : " << getInput().getType() << ", [";
+  printer.increaseIndent();
+  bool first = true;
+  auto printCase = [&](StringRef name, Block *destination) {
+    if (!first)
+      printer << ',';
+    first = false;
+    printer.printNewline();
+    printer << name << ": ";
+    printer.printSuccessor(destination);
+  };
+  if (Block *defaultDestination = getDefaultDestination())
+    printCase("default", defaultDestination);
+  for (auto [name, destination] : llvm::zip_equal(
+           getCaseNames().getAsValueRange<StringAttr>(), getCaseDestinations()))
+    printCase(name, destination);
+  printer.decreaseIndent();
+  printer.printNewline();
+  printer << ']';
+  printer.printOptionalAttrDict((*this)->getAttrs(), {getCaseNamesAttrName()});
+}
+
+Block *SwitchOp::getDefaultDestination() {
+  if (getDestinations().size() == getCaseNames().size())
+    return nullptr;
+  return getDestinations().back();
+}
+
+SuccessorRange SwitchOp::getCaseDestinations() {
+  return getDestinations().take_front(getCaseNames().size());
+}
+
+LogicalResult SwitchOp::verify() {
+  SumType inputType = getInput().getType();
+  size_t caseCount = getCaseNames().size();
+  if (getDestinations().size() != caseCount &&
+      getDestinations().size() != caseCount + 1)
+    return emitOpError() << "expects one successor per case, and at most one "
+                            "default successor";
+  llvm::SmallDenseSet<StringRef> listed;
+  for (auto [name, destination] :
+       llvm::zip_equal(getCaseNames().getAsValueRange<StringAttr>(),
+                       getCaseDestinations())) {
+    std::optional<SumCase> sumCase = inputType.lookupCase(name);
+    if (!sumCase)
+      return emitOpError() << "expects '" << name << "' to be a case of "
+                           << inputType;
+    if (!listed.insert(name).second)
+      return emitOpError() << "expects case '" << name << "' to be listed once";
+    if (TypeRange(destination->getArgumentTypes()) !=
+        TypeRange(sumCase->fields))
+      return emitOpError() << "expects the successor of case '" << name
+                           << "' to take arguments of types "
+                           << formatTypes(sumCase->fields);
+  }
+  bool exhaustive = listed.size() == inputType.getCases().size();
+  Block *defaultDestination = getDefaultDestination();
+  if (!defaultDestination && !exhaustive) {
+    InFlightDiagnostic diagnostic =
+        emitOpError() << "expects every case to be handled, or a default "
+                         "case; not handled:";
+    for (const SumCase &sumCase : inputType.getCases())
+      if (!listed.contains(sumCase.name.getValue()))
+        diagnostic << " '" << sumCase.name.getValue() << "'";
+    return diagnostic;
+  }
+  if (defaultDestination && exhaustive)
+    return emitOpError() << "expects the default case to handle at least one "
+                            "case, but every case is listed";
+  return success();
+}
+
+/// Returns the fields of the case of successor `index` as produced operands:
+/// the switch forwards no operand.
+SuccessorOperands SwitchOp::getSuccessorOperands(unsigned index) {
+  unsigned produced = 0;
+  if (index < getCaseNames().size())
+    produced = getInput()
+                   .getType()
+                   .lookupCase(cast<StringAttr>(getCaseNames()[index]))
+                   ->fields.size();
+  return SuccessorOperands(produced, MutableOperandRange(getOperation(), 1, 0));
+}
+
+Block *SwitchOp::getDestinationForCase(StringRef name) {
+  for (auto [caseName, destination] : llvm::zip_equal(
+           getCaseNames().getAsValueRange<StringAttr>(), getCaseDestinations()))
+    if (caseName == name)
+      return destination;
+  return getDefaultDestination();
+}
+
+/// Returns the operands with which `op` branches when its input is `make`:
+/// the fields for the successor of the case, none for the default.
+static ValueRange getOperandsForMake(SwitchOp op, MakeOp make) {
+  if (op.getDestinationForCase(make.getCaseName()) ==
+      op.getDefaultDestination())
+    return ValueRange();
+  return make.getFields();
+}
+
+namespace {
+/// Replaces a switch on a value built by `adt.make` with a branch to the
+/// successor of that case, with the fields as arguments: the reduction rule
+/// of a case analysis on a known constructor.
+struct SwitchOnMake : public OpRewritePattern<SwitchOp> {
+  using OpRewritePattern<SwitchOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    MakeOp make = op.getInput().getDefiningOp<MakeOp>();
+    if (!make)
+      return failure();
+    rewriter.replaceOpWithNewOp<cf::BranchOp>(
+        op, op.getDestinationForCase(make.getCaseName()),
+        getOperandsForMake(op, make));
+    return success();
+  }
+};
+
+/// Replaces a switch on `arith.select` of two values built by `adt.make`
+/// with a conditional branch to the successors of both cases: the reduction
+/// rule applied on each side of the select.
+struct SwitchOnSelectOfMakes : public OpRewritePattern<SwitchOp> {
+  using OpRewritePattern<SwitchOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SwitchOp op,
+                                PatternRewriter &rewriter) const override {
+    arith::SelectOp select = op.getInput().getDefiningOp<arith::SelectOp>();
+    if (!select)
+      return failure();
+    MakeOp trueMake = select.getTrueValue().getDefiningOp<MakeOp>();
+    MakeOp falseMake = select.getFalseValue().getDefiningOp<MakeOp>();
+    if (!trueMake || !falseMake)
+      return failure();
+    rewriter.replaceOpWithNewOp<cf::CondBranchOp>(
+        op, select.getCondition(),
+        op.getDestinationForCase(trueMake.getCaseName()),
+        getOperandsForMake(op, trueMake),
+        op.getDestinationForCase(falseMake.getCaseName()),
+        getOperandsForMake(op, falseMake));
+    return success();
+  }
+};
+} // namespace
+
+void SwitchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                           MLIRContext *context) {
+  patterns.add<SwitchOnMake, SwitchOnSelectOfMakes>(context);
+}
+
+//===----------------------------------------------------------------------===//
 // WidenOp
 //===----------------------------------------------------------------------===//
 
@@ -377,6 +580,29 @@ LogicalResult WidenOp::verify() {
                            << formatTypes(resultCase->fields);
   }
   return success();
+}
+
+namespace {
+/// Replaces the widening of a value built by `adt.make` with the same case
+/// built in the wider sum.
+struct WidenOfMake : public OpRewritePattern<WidenOp> {
+  using OpRewritePattern<WidenOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WidenOp op,
+                                PatternRewriter &rewriter) const override {
+    MakeOp make = op.getInput().getDefiningOp<MakeOp>();
+    if (!make)
+      return failure();
+    rewriter.replaceOpWithNewOp<MakeOp>(
+        op, op.getType(), make.getCaseNameAttr(), make.getFields());
+    return success();
+  }
+};
+} // namespace
+
+void WidenOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                          MLIRContext *context) {
+  patterns.add<WidenOfMake>(context);
 }
 
 /// Folds two widenings into one.

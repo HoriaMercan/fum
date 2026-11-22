@@ -78,3 +78,25 @@ func.func @widen(%error: !adt.sum<io(i32), overflow>) -> !adt.sum<div_by_zero, i
   %wider = adt.widen %error : !adt.sum<io(i32), overflow> to !adt.sum<div_by_zero, io(i32), overflow>
   return %wider : !adt.sum<div_by_zero, io(i32), overflow>
 }
+
+// -----
+
+// A switch becomes cf.switch on the tag; the slots of a case are passed to
+// its successor. Without a default, the last case is the default.
+// CHECK-LABEL: func.func @switch
+// CHECK-SAME: (%[[TAG:.*]]: i32, %[[CODE:.*]]: i32) -> i32
+// CHECK: cf.switch %[[TAG]] : i32, [
+// CHECK-NEXT: default: ^[[IO:.*]](%[[CODE]] : i32),
+// CHECK-NEXT: 0: ^[[EOF:.*]]
+// CHECK-NEXT: ]
+func.func @switch(%error: !adt.sum<eof, io(i32)>) -> i32 {
+  adt.switch %error : !adt.sum<eof, io(i32)>, [
+    eof: ^eof,
+    io: ^io
+  ]
+^io(%value: i32):
+  return %value : i32
+^eof:
+  %zero = arith.constant 0 : i32
+  return %zero : i32
+}

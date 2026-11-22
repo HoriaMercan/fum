@@ -9,6 +9,7 @@
 #include "fum/Dialect/ADT/IR/ADTDialect.h"
 #include "fum/Dialect/ADT/IR/ADTOps.h"
 #include "fum/Dialect/ADT/IR/ADTTypes.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 
 using namespace mlir;
 using namespace mlir::adt;

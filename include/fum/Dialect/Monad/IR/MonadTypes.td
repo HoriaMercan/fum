@@ -38,70 +38,6 @@ def MonadMaybeType : Monad_Type<"Maybe", "maybe", [MonadTypeInterface]> {
   }];
 }
 
-def MonadErrorType : Monad_Type<"Error", "error"> {
-  let summary = "Named error type";
-  let description = [{
-    A value of type `!monad.error<@name, P1, ..., Pk>` is the error `@name`
-    carrying one payload value of each type `P1`, ..., `Pk`. Without payload,
-    the type has exactly one value, like the builtin `none` type. The error
-    is declared by `monad.error.declare @name(P1, ..., Pk)` in the enclosing
-    module: the operations that use the type check that the declaration
-    exists and has the same payload types, as `func.call` checks the
-    signature of its callee.
-
-    ```mlir
-    !monad.error<@overflow>
-    !monad.error<@out_of_bounds, index, index>
-    ```
-  }];
-  let parameters = (ins
-      "::mlir::FlatSymbolRefAttr":$name,
-      OptionalArrayRefParameter<"::mlir::Type", "payload types">:$payloadTypes);
-  let assemblyFormat = "`<` $name (`,` $payloadTypes^)? `>`";
-  let genVerifyDecl = 1;
-  let builders = [
-    TypeBuilder<(ins "::llvm::StringRef":$name,
-                     CArg<"::mlir::TypeRange", "{}">:$payloadTypes), [{
-      return $_get($_ctxt, ::mlir::FlatSymbolRefAttr::get($_ctxt, name),
-                   ::llvm::to_vector(payloadTypes));
-    }]>
-  ];
-}
-
-def MonadErrorUnionType : Monad_Type<"ErrorUnion", "error_union"> {
-  let summary = "Union of named error types";
-  let description = [{
-    A value of type `!monad.error_union<{E1, ..., Em}>` is exactly one value
-    of one of the error types `E1`, ..., `Em`. The errors form a non-empty
-    set: a union without members would have no value at all. Their names are
-    distinct, and they are stored sorted by name. The parser and the builder
-    accept them in any order.
-
-    A union is not a monad. `monad.error.switch` branches on its
-    member.
-
-    ```mlir
-    !monad.error_union<{!monad.error<@div_by_zero>, !monad.error<@overflow>}>
-    ```
-  }];
-  let parameters = (ins
-      ArrayRefParameter<"::mlir::monad::ErrorType", "errors">:$errors);
-  let assemblyFormat = "`<` custom<ErrorSet>($errors) `>`";
-  let skipDefaultBuilders = 1;
-  let builders = [
-    TypeBuilder<(ins "::llvm::ArrayRef<::mlir::monad::ErrorType>":$errors)>
-  ];
-  let genVerifyDecl = 1;
-  let extraClassDeclaration = [{
-    /// Returns the member error named `name`, or null if there is none.
-    ErrorType lookup(::llvm::StringRef name) const;
-    /// Returns whether `error` is a member of this union.
-    bool contains(ErrorType error) const;
-    /// Returns whether every member of this union is a member of `other`.
-    bool isSubsetOf(ErrorUnionType other) const;
-  }];
-}
-
 def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
   let summary = "Either monad type";
   let description = [{
@@ -117,19 +53,15 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
     a left. `monad.either.branch` branches on the side, also inside a
     `monad.do`.
 
-    When `L` is an `!monad.error` or an `!monad.error_union`, the type
-    describes a computation that may throw: `monad.error.throw` creates an
-    error, `monad.error.widen` converts it to the left type, and
-    `monad.either.left` puts it on the left; `monad.error.catch` handles the
-    errors of the left. A single error behaves as the union of that
-    error.
+    The type is a monad over the sum `!adt.sum<left(L), right(R1, ..., Rn)>`,
+    to which `--convert-monad-to-adt` lowers it. A computation that may fail
+    with one of several errors has a sum of the errors as its left type.
 
     ```mlir
     // Either an i32, or an overflow or a division by zero.
-    !monad.either<!monad.error_union<{!monad.error<@div_by_zero>,
-                                      !monad.error<@overflow>}>, i32>
+    !monad.either<!adt.sum<div_by_zero, overflow>, i32>
     // Either nothing, or a division by zero.
-    !monad.either<!monad.error<@div_by_zero>, none>
+    !monad.either<!adt.sum<div_by_zero>, none>
     ```
   }];
   let parameters = (ins
@@ -141,9 +73,6 @@ def MonadEitherType : Monad_Type<"Either", "either", [MonadTypeInterface]> {
     /// Returns the either type with the given value types and the left type
     /// of this type.
     MonadTypeInterface cloneWithValueTypes(::mlir::TypeRange valueTypes) const;
-    /// Returns the errors of the left type: the left type if it is an error
-    /// union, the union of the error if it is an error, and null otherwise.
-    ErrorUnionType getErrorUnion() const;
   }];
 }
 

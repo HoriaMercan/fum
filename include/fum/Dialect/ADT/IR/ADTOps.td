@@ -10,6 +10,7 @@
 #define ADT_OPS
 
 include "fum/Dialect/ADT/IR/ADTTypes.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 class ADT_Op<string mnemonic, list<Trait> traits = []> :
@@ -117,6 +118,53 @@ def ADT_YieldOp : ADT_Op<"yield", [Pure, Terminator, HasParent<"MatchOp">]> {
   let assemblyFormat = "($values^ `:` type($values))? attr-dict";
 }
 
+def ADT_SwitchOp : ADT_Op<"switch", [
+    Pure,
+    Terminator,
+    DeclareOpInterfaceMethods<BranchOpInterface>]> {
+  let summary = "Branches on the case of a sum";
+  let description = [{
+    Branches to the successor of the case that the input holds, with the
+    fields of that case as the arguments of the successor. This is the
+    eliminator of the sum in unstructured control flow, as `cf.switch` is for
+    integers; `adt.match` is its structured counterpart.
+
+    ```mlir
+    adt.switch %error : !adt.sum<div_by_zero, io(i32), overflow>, [
+      default: ^other,
+      io: ^io
+    ]
+    ^io(%code: i32):
+    ^other:
+    ```
+
+    - Each case lists a case name of the input and a successor, which takes
+      one argument of each field type of the case. The arguments are produced
+      by the branch, which forwards no operands.
+    - No case name is listed twice. Several cases may branch to the same
+      successor if their fields have the same types.
+    - Without `default`, every case of the input is listed. With `default`,
+      at least one case is not listed, and the `default` successor, written
+      first, takes no argument; the input is still in scope.
+  }];
+  let arguments = (ins ADT_SumType:$input, StrArrayAttr:$case_names);
+  let successors = (successor VariadicSuccessor<AnySuccessor>:$destinations);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+  let extraClassDeclaration = [{
+    /// Returns the successor of the cases that are not listed, or null.
+    ::mlir::Block *getDefaultDestination();
+
+    /// Returns the successors of the listed cases, in the order of the names.
+    ::mlir::SuccessorRange getCaseDestinations();
+
+    /// Returns the successor to which the case named `name` branches: its own
+    /// successor if it is listed, and the default successor otherwise.
+    ::mlir::Block *getDestinationForCase(::llvm::StringRef name);
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Coercion: inclusion into a larger sum
 //===----------------------------------------------------------------------===//
@@ -140,6 +188,7 @@ def ADT_WidenOp : ADT_Op<"widen", [Pure]> {
   }];
   let hasVerifier = 1;
   let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 #endif // ADT_OPS

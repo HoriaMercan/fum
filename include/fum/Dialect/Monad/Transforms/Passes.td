@@ -11,41 +11,34 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertMonadToCFPass : Pass<"convert-monad-to-cf", "::mlir::ModuleOp"> {
-  let summary = "Lower monadic computations to control flow";
+def ConvertMonadToADTPass : Pass<"convert-monad-to-adt", "::mlir::ModuleOp"> {
+  let summary = "Lower monadic computations to sum types and control flow";
   let description = [{
-    Lowers the monad dialect to the `cf`, `arith`, and `ub` dialects. Each
+    Lowers the monad dialect, the high-level form, to the low-level form: sum
+    types of the `adt` dialect and unstructured control flow. Every monadic
+    type is the sum of its constructors:
+
+    - `!monad.maybe<T...>` becomes `!adt.sum<just(T...), nothing>`; without
+      value types, both cases have no field, and the sum is only a tag;
+    - `!monad.either<L, R...>` becomes `!adt.sum<left(L), right(R...)>`;
+    - `!monad.either<!adt.sum<C...>, R...>` becomes the merged sum
+      `!adt.sum<C..., right(R...)>`, unless the cases `C...` contain `right`:
+      a left holding a case of the errors is that case itself, so the sum
+      needs one tag instead of two.
+
+    Constructors become `adt.make` (`monad.return`, `monad.maybe.none`,
+    `monad.either.left`), or `adt.widen` for a left of a merged sum. Each
     `monad.do` is inlined into the enclosing region, ending in a block that
-    receives the result; `monad.bind`, `monad.error.catch`,
-    `monad.either.branch`, and `monad.error.switch` become conditional
-    branches and switches. Monadic values are then expanded into several
-    values:
+    receives the result. `monad.bind` and `monad.either.branch` become
+    `adt.switch`: a bind continues with the fields of the success case, and
+    rebuilds every other case in the type of the `monad.do`, which it ends.
 
-    - `!monad.maybe<T...>` becomes an `i1` (set for `some`) and `T...`;
-    - `!monad.either<!monad.error_union<{E...}>, R...>` becomes an `i32` tag
-      (0 for a right, otherwise the tag of the error), `R...`, and the
-      payload slots of every error of the union; an either whose left type
-      is one error is lowered as the union of that error;
-    - any other `!monad.either<L, R...>` becomes an `i1` (set for a left),
-      the values of `L`, and `R...`;
-    - `!monad.error<@name, P...>` becomes `P...`, and
-      `!monad.error_union<{E...}>` an `i32` tag and the payload slots.
-
-    Sum types of the `adt` dialect, inside monadic types or not, are lowered
-    in the same conversion, as `--convert-adt-to-scf` lowers them, so that
-    an either whose left type is a sum becomes an `i1`, the tag and slots of
-    the sum, and `R...`.
-
-    The tag of an error is the tag of its declaration in the module, as
-    `monad.error.declare` describes; the pass fails if the module uses an
-    error without a declaration with the same payload types. Unused slots
-    hold `ub.poison`.
+    A `monad.do` must not be nested in a region that takes a single block,
+    such as a region of `adt.match`.
   }];
   let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::cf::ControlFlowDialect",
-    "::mlir::scf::SCFDialect",
-    "::mlir::ub::UBDialect"
+    "::mlir::adt::ADTDialect",
+    "::mlir::cf::ControlFlowDialect"
   ];
 }
 

@@ -36,6 +36,7 @@ def ADT_Dialect : Dialect {
     a structural type cannot refer to itself.
   }];
   let cppNamespace = "::mlir::adt";
+  let dependentDialects = ["::mlir::cf::ControlFlowDialect"];
 
   let useDefaultTypePrinterParser = 1;
   let extraClassDeclaration = [{

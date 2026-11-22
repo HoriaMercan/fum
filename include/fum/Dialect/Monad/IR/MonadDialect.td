@@ -10,7 +10,6 @@
 #define MONAD_DIALECT
 
 include "mlir/IR/OpBase.td"
-include "mlir/IR/SymbolInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // Monad dialect definition.
@@ -37,11 +36,7 @@ def Monad_Dialect : Dialect {
 // Base monad operation definition.
 //===----------------------------------------------------------------------===//
 
-// Every operation verifies the error types it uses against their
-// `monad.error.declare` declarations.
 class Monad_Op<string mnemonic, list<Trait> traits = []> :
-    Op<Monad_Dialect, mnemonic,
-       !listconcat(traits,
-                   [DeclareOpInterfaceMethods<SymbolUserOpInterface>])>;
+    Op<Monad_Dialect, mnemonic, traits>;
 
 #endif // MONAD_DIALECT

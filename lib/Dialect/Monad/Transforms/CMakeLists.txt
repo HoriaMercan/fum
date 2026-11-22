@@ -1,5 +1,5 @@
 add_mlir_dialect_library(MLIRMonadTransforms
-  ConvertMonadToCF.cpp
+  ConvertMonadToADT.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/
@@ -8,15 +8,12 @@ add_mlir_dialect_library(MLIRMonadTransforms
   MLIRMonadPassesIncGen
 
   LINK_LIBS PUBLIC
-  MLIRADTTransforms
-  MLIRArithDialect
+  MLIRADTDialect
   MLIRControlFlowDialect
   MLIRControlFlowTransforms
   MLIRFuncDialect
   MLIRFuncTransforms
   MLIRMonadDialect
   MLIRPass
-  MLIRSCFTransforms
   MLIRTransforms
-  MLIRUBDialect
   )

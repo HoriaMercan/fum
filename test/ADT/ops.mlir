@@ -111,3 +111,43 @@ func.func @widen(%error: !adt.sum<overflow, io(i32)>) -> !adt.sum<io(i32), div_b
 func.func @same_type(%error: !adt.sum<io(i32), div_by_zero>) -> !adt.sum<div_by_zero, io(i32)> {
   return %error : !adt.sum<io(i32), div_by_zero>
 }
+
+// A switch branches to the successor of the case, which receives its fields;
+// the default case is printed first and takes no argument.
+// CHECK-LABEL: func.func @switch
+// CHECK: adt.switch %{{.*}} : !adt.sum<div_by_zero, io(i32), overflow>, [
+// CHECK-NEXT: default: ^[[OTHER:.*]],
+// CHECK-NEXT: io: ^[[IO:.*]]
+// CHECK-NEXT: ]
+// CHECK: ^[[IO]](%{{.*}}: i32):
+// CHECK: ^[[OTHER]]:
+func.func @switch(%error: !adt.sum<div_by_zero, io(i32), overflow>) -> i32 {
+  adt.switch %error : !adt.sum<div_by_zero, io(i32), overflow>, [
+    default: ^other,
+    io: ^io
+  ]
+^io(%code: i32):
+  return %code : i32
+^other:
+  %zero = arith.constant 0 : i32
+  return %zero : i32
+}
+
+// Cases with the same fields may share a successor.
+// CHECK-LABEL: func.func @switch_shared_successor
+// CHECK: adt.switch %{{.*}} : !adt.sum<eof, read(i32), write(i32)>, [
+// CHECK-NEXT: eof: ^{{.*}},
+// CHECK-NEXT: read: ^[[CODE:.*]],
+// CHECK-NEXT: write: ^[[CODE]]
+func.func @switch_shared_successor(%error: !adt.sum<read(i32), write(i32), eof>) -> i32 {
+  adt.switch %error : !adt.sum<read(i32), write(i32), eof>, [
+    eof: ^end,
+    read: ^code,
+    write: ^code
+  ]
+^code(%code: i32):
+  return %code : i32
+^end:
+  %zero = arith.constant 0 : i32
+  return %zero : i32
+}

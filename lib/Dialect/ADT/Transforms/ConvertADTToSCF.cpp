@@ -252,6 +252,65 @@ struct MatchLowering : public OpConversionPattern<MatchOp> {
   }
 };
 
+/// Converts the signature of `block` with `converter`, once per block.
+Block *convertBlockSignature(ConversionPatternRewriter &rewriter,
+                             const TypeConverter &converter, Block *block,
+                             DenseMap<Block *, Block *> &converted) {
+  auto [it, inserted] = converted.try_emplace(block, block);
+  if (!inserted)
+    return it->second;
+  std::optional<TypeConverter::SignatureConversion> conversion =
+      converter.convertBlockSignature(block);
+  if (conversion)
+    it->second =
+        rewriter.applySignatureConversion(block, *conversion, &converter);
+  return it->second;
+}
+
+/// Lowers `adt.switch` to `cf.switch` on the tag, passing the slots of each
+/// case to its successor. Without a default case, the last case is also the
+/// default destination, since no other tag reaches it.
+struct SwitchOpLowering : public OpConversionPattern<SwitchOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  /// Builds the `cf.switch`.
+  LogicalResult
+  matchAndRewrite(SwitchOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SumType sum = op.getInput().getType();
+    ValueRange lowered = adaptor.getInput();
+    SmallVector<ValueRange> caseSlots =
+        splitCaseSlots(*getTypeConverter(), sum, lowered);
+    DenseMap<Block *, Block *> converted;
+    SmallVector<int32_t> caseValues;
+    SmallVector<Block *> caseDestinations;
+    SmallVector<ValueRange> caseOperands;
+    for (auto [name, destination] :
+         llvm::zip_equal(op.getCaseNames().getAsValueRange<StringAttr>(),
+                         op.getCaseDestinations())) {
+      unsigned position = *sum.getCasePosition(name);
+      caseValues.push_back(position);
+      caseDestinations.push_back(convertBlockSignature(
+          rewriter, *getTypeConverter(), destination, converted));
+      caseOperands.push_back(caseSlots[position]);
+    }
+    Block *defaultDestination = op.getDefaultDestination();
+    ValueRange defaultOperands;
+    if (defaultDestination) {
+      defaultDestination = convertBlockSignature(rewriter, *getTypeConverter(),
+                                                 defaultDestination, converted);
+    } else {
+      defaultDestination = caseDestinations.pop_back_val();
+      defaultOperands = caseOperands.pop_back_val();
+      caseValues.pop_back();
+    }
+    rewriter.replaceOpWithNewOp<cf::SwitchOp>(
+        op, lowered.front(), defaultDestination, defaultOperands, caseValues,
+        caseDestinations, caseOperands);
+    return success();
+  }
+};
+
 /// Lowers `adt.yield` to `scf.yield` of the lowered values.
 struct YieldLowering : public OpConversionPattern<YieldOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -337,18 +396,11 @@ struct SwitchLowering : public OpConversionPattern<cf::SwitchOp> {
       caseOperands.push_back(flatten(groups));
     SmallVector<ValueRange> caseOperandRanges(caseOperands.begin(),
                                               caseOperands.end());
-    DenseMap<Block *, Block *> convertedBlocks;
+    DenseMap<Block *, Block *> converted;
     /// Returns `block` with its signature converted.
-    auto convertBlock = [&](Block *block) -> Block * {
-      auto [it, inserted] = convertedBlocks.try_emplace(block, block);
-      if (!inserted)
-        return it->second;
-      std::optional<TypeConverter::SignatureConversion> conversion =
-          getTypeConverter()->convertBlockSignature(block);
-      if (conversion)
-        it->second = rewriter.applySignatureConversion(block, *conversion,
-                                                       getTypeConverter());
-      return it->second;
+    auto convertBlock = [&](Block *block) {
+      return convertBlockSignature(rewriter, *getTypeConverter(), block,
+                                   converted);
     };
     Block *defaultDest = convertBlock(op.getDefaultDestination());
     SmallVector<Block *> caseDests;
@@ -367,8 +419,8 @@ struct SwitchLowering : public OpConversionPattern<cf::SwitchOp> {
 
 void mlir::adt::populateADTToSCFConversionPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns) {
-  patterns.add<MakeLowering, WidenLowering, MatchLowering, YieldLowering,
-               PoisonLowering, SelectLowering, CastLowering>(
+  patterns.add<MakeLowering, WidenLowering, MatchLowering, SwitchOpLowering,
+               YieldLowering, PoisonLowering, SelectLowering, CastLowering>(
       converter, patterns.getContext());
   patterns.add<SwitchLowering>(converter, patterns.getContext(),
                                /*benefit=*/2);

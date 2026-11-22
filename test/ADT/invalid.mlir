@@ -174,3 +174,55 @@ func.func @widen_same_type(%error: !adt.sum<a, b>) {
   %wider = adt.widen %error : !adt.sum<a, b> to !adt.sum<b, a>
   return
 }
+
+// -----
+
+func.func @switch_not_exhaustive(%error: !adt.sum<a, b, c>) {
+  // expected-error @below {{expects every case to be handled, or a default case; not handled: 'c'}}
+  adt.switch %error : !adt.sum<a, b, c>, [
+    a: ^a,
+    b: ^a
+  ]
+^a:
+  return
+}
+
+// -----
+
+func.func @switch_arguments(%error: !adt.sum<io(i32), eof>) {
+  // expected-error @below {{expects the successor of case 'io' to take arguments of types (i32)}}
+  adt.switch %error : !adt.sum<io(i32), eof>, [
+    io: ^io,
+    eof: ^eof
+  ]
+^io(%code: i64):
+  return
+^eof:
+  return
+}
+
+// -----
+
+func.func @switch_default_argument(%error: !adt.sum<io(i32), eof>) {
+  // expected-error @below {{branch has 0 operands for successor #1, but target block has 1}}
+  adt.switch %error : !adt.sum<io(i32), eof>, [
+    default: ^other,
+    eof: ^eof
+  ]
+^other(%code: i32):
+  return
+^eof:
+  return
+}
+
+// -----
+
+func.func @switch_default_last(%error: !adt.sum<io(i32), eof>) {
+  adt.switch %error : !adt.sum<io(i32), eof>, [
+    eof: ^eof,
+    // expected-error @below {{expected the default case first, and only once}}
+    default: ^eof
+  ]
+^eof:
+  return
+}
